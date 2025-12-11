@@ -1,0 +1,15 @@
+# Exclude the temporary dependency folder
+node_modules/
+
+# Exclude local build output
+android/
+ios/
+
+# Exclude unnecessary files/folders
+.git/
+.svn/
+.idea/
+.vscode/
+temp/
+*~
+*.log
