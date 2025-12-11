@@ -7,7 +7,8 @@ export default {
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
     splash: {
-      image: "./assets/splash.png",
+      // 注释掉自定义启动图，使用默认配置
+      // image: "./assets/splash.png",
       resizeMode: "contain",
       backgroundColor: "#ffffff"
     },
@@ -23,14 +24,13 @@ export default {
         foregroundImage: "./assets/adaptive-icon.png",
         backgroundColor: "#ffffff"
       },
-      permissions: [] // Add any permissions your app needs
+      permissions: []
     },
     extra: {
       eas: {
         projectId: "60d1ffc0-4534-478f-b63c-4893dcf25d11"
       }
     },
-    plugins: ["expo-router",
-    "expo-web-browser"] // Remove if empty, or add specific plugins
+    plugins: ["expo-router", "expo-web-browser"]
   }
 };

@@ -15,7 +15,8 @@ import {
   query,
   serverTimestamp,
   updateDoc,
-  where
+  where,
+  writeBatch
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -128,7 +129,7 @@ const CategoryChip = ({ category, onPress, selected = false }) => {
       <Ionicons 
         name={config.icon} 
         size={16} 
-        color={selected ? COLORS.card : config.color} 
+        color={selected ? COLORS.card : config.color } 
       />
       <Text style={[
         styles.categoryText,
@@ -162,6 +163,199 @@ const UserAvatar = ({ user, size = 28 }) => {
         {(user?.displayName || user?.email || "U").charAt(0).toUpperCase()}
       </Text>
     </View>
+  );
+};
+
+/* -------------------- Notification Center Component -------------------- */
+const NotificationCenter = () => {
+  const { user } = useApp();
+  const [notifications, setNotifications] = useState([]);
+  const [notificationVisible, setNotificationVisible] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    
+    const userRef = doc(db, "users", user.uid);
+    const unsub = onSnapshot(userRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setNotifications(data.notifications || []);
+      }
+    });
+
+    return () => unsub();
+  }, [user]);
+
+  const markAsRead = async (notificationId) => {
+    try {
+      const userRef = doc(db, "users", user.uid);
+      const userSnap = await getDoc(userRef);
+      
+      if (userSnap.exists()) {
+        const userData = userSnap.data();
+        const updatedNotifications = (userData.notifications || []).map(n => 
+          n.id === notificationId ? { ...n, read: true } : n
+        );
+        
+        await updateDoc(userRef, {
+          notifications: updatedNotifications,
+          unreadNotifications: arrayRemove(notificationId)
+        });
+      }
+    } catch (error) {
+      console.error("Error marking notification as read:", error);
+    }
+  };
+
+  const markAllAsRead = async () => {
+    try {
+      setLoading(true);
+      const userRef = doc(db, "users", user.uid);
+      const userSnap = await getDoc(userRef);
+      
+      if (userSnap.exists()) {
+        const userData = userSnap.data();
+        const updatedNotifications = (userData.notifications || []).map(n => ({ ...n, read: true }));
+        
+        await updateDoc(userRef, {
+          notifications: updatedNotifications,
+          unreadNotifications: []
+        });
+      }
+    } catch (error) {
+      console.error("Error marking all as read:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  const formatNotificationTime = (timestamp) => {
+    if (!timestamp) return '';
+    
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    
+    return date.toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: 'numeric' 
+    });
+  };
+
+  return (
+    <>
+      <TouchableOpacity 
+        style={styles.notificationButton}
+        onPress={() => setNotificationVisible(true)}
+      >
+        <Ionicons name="notifications-outline" size={24} color={COLORS.text} />
+        {unreadCount > 0 && (
+          <View style={styles.notificationBadge}>
+            <Text style={styles.notificationBadgeText}>
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </Text>
+          </View>
+        )}
+      </TouchableOpacity>
+
+      <Modal
+        visible={notificationVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }}>
+          <View style={styles.notificationHeader}>
+            <View>
+              <Text style={styles.notificationTitle}>Notifications</Text>
+              {unreadCount > 0 && (
+                <Text style={styles.notificationSubtitle}>
+                  {unreadCount} unread {unreadCount === 1 ? 'notification' : 'notifications'}
+                </Text>
+              )}
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+              {unreadCount > 0 && (
+                <TouchableOpacity onPress={markAllAsRead} disabled={loading}>
+                  <Text style={styles.markAllReadText}>Mark all read</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => setNotificationVisible(false)}>
+                <Ionicons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <FlatList
+            data={notifications.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[
+                  styles.notificationItem,
+                  !item.read && styles.notificationItemUnread
+                ]}
+                onPress={() => markAsRead(item.id)}
+              >
+                <View style={styles.notificationIcon}>
+                  {item.type === "goal_invite" && (
+                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.warm + '20' }]}>
+                      <Ionicons name="person-add" size={20} color={COLORS.warm} />
+                    </View>
+                  )}
+                  {item.type === "progress_update" && (
+                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.success + '20' }]}>
+                      <Ionicons name="trending-up" size={20} color={COLORS.success} />
+                    </View>
+                  )}
+                  {item.type === "milestone_completed" && (
+                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.warning + '20' }]}>
+                      <Ionicons name="trophy" size={20} color={COLORS.warning} />
+                    </View>
+                  )}
+                  {item.type === "goal_joined" && (
+                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.info + '20' }]}>
+                      <Ionicons name="people" size={20} color={COLORS.info} />
+                    </View>
+                  )}
+                  {item.type === "goal_completed" && (
+                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.success + '20' }]}>
+                      <Ionicons name="checkmark-done" size={20} color={COLORS.success} />
+                    </View>
+                  )}
+                </View>
+                <View style={styles.notificationContent}>
+                  <Text style={styles.notificationMessage}>{item.message}</Text>
+                  <Text style={styles.notificationTime}>
+                    {formatNotificationTime(item.timestamp)}
+                  </Text>
+                </View>
+                {!item.read && <View style={styles.notificationDot} />}
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={
+              <View style={styles.emptyNotifications}>
+                <Ionicons name="notifications-off-outline" size={64} color={COLORS.border} />
+                <Text style={styles.emptyNotificationText}>No notifications yet</Text>
+                <Text style={styles.emptyNotificationSubtext}>
+                  When you get invited to goals or someone makes progress, you'll see it here!
+                </Text>
+              </View>
+            }
+          />
+        </SafeAreaView>
+      </Modal>
+    </>
   );
 };
 
@@ -298,6 +492,200 @@ export default function SharedGoalsScreen() {
     return icons[category] || 'ellipse';
   };
 
+  /* -------------------- Enhanced Notification Functions -------------------- */
+  const sendEnhancedGoalInvite = async (goal, newParticipant, inviter) => {
+    try {
+      // Notification to the new participant
+      await sendNotification(
+        [newParticipant.uid],
+        `${inviter.displayName || inviter.email} invited you to join "${goal.title}"`,
+        { 
+          type: "goal_invite", 
+          goalId: goal.id,
+          goalTitle: goal.title,
+          inviterId: inviter.uid,
+          inviterName: inviter.displayName || inviter.email
+        },
+        {
+          type: "goal_invite",
+          priority: "high",
+          actionRequired: true,
+          goalTitle: goal.title,
+          inviterName: inviter.displayName || inviter.email
+        }
+      );
+
+      // Notification to existing participants (excluding inviter)
+      const existingParticipants = (goal.participants || []).filter(uid => 
+        uid !== inviter.uid && uid !== newParticipant.uid
+      );
+      
+      if (existingParticipants.length > 0) {
+        await sendNotification(
+          existingParticipants,
+          `${newParticipant.displayName} joined "${goal.title}"`,
+          { 
+            type: "goal_joined", 
+            goalId: goal.id,
+            newMemberId: newParticipant.uid,
+            newMemberName: newParticipant.displayName
+          },
+          {
+            type: "goal_joined",
+            priority: "normal",
+            goalTitle: goal.title
+          }
+        );
+      }
+
+      // Send a welcome message in comments
+      const welcomeComment = {
+        authorId: "system",
+        authorName: "System",
+        text: `🎉 Welcome ${newParticipant.displayName} to this goal!`,
+        timestamp: new Date(),
+        isSystemMessage: true
+      };
+
+      await updateDoc(doc(db, path, goal.id), {
+        comments: arrayUnion(welcomeComment),
+        updatedAt: serverTimestamp(),
+      });
+
+      return true;
+    } catch (error) {
+      console.error("Error sending enhanced goal invite:", error);
+      return false;
+    }
+  };
+
+  const sendProgressCelebration = async (goal, addedValue, contributor) => {
+    try {
+      const progressPercentage = computeProgress(goal);
+      
+      // Send notifications for milestone achievements
+      if (progressPercentage >= 100) {
+        await sendNotification(
+          goal.participants || [],
+          `🎉 Goal "${goal.title}" has been 100% completed! Congratulations everyone!`,
+          { 
+            type: "goal_completed", 
+            goalId: goal.id,
+            goalTitle: goal.title
+          },
+          {
+            type: "goal_completed",
+            priority: "high",
+            goalTitle: goal.title
+          }
+        );
+      } else if (progressPercentage >= 75) {
+        await sendNotification(
+          goal.participants || [],
+          `🔥 You're 75% of the way to completing "${goal.title}"! Keep going!`,
+          { 
+            type: "progress_milestone", 
+            goalId: goal.id,
+            milestone: "75%"
+          }
+        );
+      } else if (progressPercentage >= 50) {
+        await sendNotification(
+          goal.participants || [],
+          `✨ Halfway there! "${goal.title}" is 50% complete.`,
+          { 
+            type: "progress_milestone", 
+            goalId: goal.id,
+            milestone: "50%"
+          }
+        );
+      }
+
+      // Send progress update to all participants (excluding contributor)
+      const otherParticipants = (goal.participants || []).filter(uid => uid !== contributor.uid);
+      
+      if (otherParticipants.length > 0) {
+        await sendNotification(
+          otherParticipants,
+          `${contributor.displayName} added ${addedValue} ${goal.unit || ""} to "${goal.title}"`,
+          { 
+            type: "progress_update", 
+            goalId: goal.id,
+            addedValue,
+            unit: goal.unit,
+            contributorId: contributor.uid,
+            contributorName: contributor.displayName
+          }
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error sending progress celebration:", error);
+      return false;
+    }
+  };
+
+  const sendMilestoneNotification = async (goal, milestone, action, actor) => {
+    try {
+      const actionText = action === "completed" ? "completed" : "added";
+      const emoji = action === "completed" ? "🏆" : "🎯";
+      
+      await sendNotification(
+        goal.participants || [],
+        `${emoji} ${actor.displayName} ${actionText} milestone: "${milestone.title}"`,
+        { 
+          type: action === "completed" ? "milestone_completed" : "milestone_added",
+          goalId: goal.id,
+          milestoneIndex: milestone.index,
+          actorId: actor.uid,
+          actorName: actor.displayName
+        }
+      );
+
+      return true;
+    } catch (error) {
+      console.error("Error sending milestone notification:", error);
+      return false;
+    }
+  };
+
+  const sendGoalUpdateNotification = async (goal, updater, changes) => {
+    try {
+      const otherParticipants = (goal.participants || []).filter(uid => uid !== updater.uid);
+      
+      if (otherParticipants.length > 0) {
+        let changeMessage = "";
+        if (changes.title) {
+          changeMessage = `renamed the goal to "${changes.title}"`;
+        } else if (changes.dueDate) {
+          changeMessage = "updated the deadline";
+        } else if (changes.priority) {
+          changeMessage = `changed priority to ${changes.priority}`;
+        } else {
+          changeMessage = "updated the goal details";
+        }
+
+        await sendNotification(
+          otherParticipants,
+          `✏️ ${updater.displayName} ${changeMessage}`,
+          { 
+            type: "goal_updated", 
+            goalId: goal.id,
+            updaterId: updater.uid,
+            updaterName: updater.displayName,
+            changes
+          }
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error sending goal update notification:", error);
+      return false;
+    }
+  };
+
   /* -------------------- Network & Data -------------------- */
   useEffect(() => {
     const unsub = NetInfo.addEventListener((state) => {
@@ -310,10 +698,13 @@ export default function SharedGoalsScreen() {
   useEffect(() => {
     if (!user?.uid) return;
     setLoading(true);
+    
+    // Filter goals where current user is a participant
     const colRef = collection(db, path);
+    const q = query(colRef, where("participants", "array-contains", user.uid));
 
     const unsub = onSnapshot(
-      colRef,
+      q,
       async (snap) => {
         const list = await Promise.all(
           snap.docs.map(async (d) => {
@@ -461,22 +852,26 @@ export default function SharedGoalsScreen() {
         })
       });
 
-      // Send notification to the new participant
-      try {
-        await sendNotification(
-          [resolved.uid],
-          `${user.displayName || user.email} added you to the goal "${selectedGoal.title}"`,
-          { 
-            type: "goal_invite", 
-            goalId: selectedGoal.id 
-          }
-        );
-      } catch (e) {
-        console.error("Notification error:", e);
-      }
+      // ENHANCED: Send better notifications
+      await sendEnhancedGoalInvite(
+        selectedGoal,
+        {
+          uid: resolved.uid,
+          displayName: resolved.displayName,
+          email: resolved.email
+        },
+        {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          email: user.email
+        }
+      );
 
       setEditCollabEmail("");
-      Alert.alert("Success", `${resolved.displayName} has been added to the goal!`);
+      Alert.alert(
+        "Invitation Sent!",
+        `${resolved.displayName} has been invited to the goal! They'll receive a notification.`
+      );
     } catch (error) {
       console.error("Error adding collaborator:", error);
       Alert.alert("Error", "Failed to add collaborator");
@@ -528,15 +923,33 @@ export default function SharedGoalsScreen() {
       const col = collection(db, path);
       const docRef = await addDoc(col, payload);
 
-      // Notify others
+      // Enhanced notifications for all invited collaborators
       const others = participantUids.filter((uid) => uid !== user.uid);
       if (others.length) {
         try {
-          await sendNotification(
-            others, 
-            `${user.displayName || user.email} invited you to join "${title.trim()}"`, 
-            { type: "goal_invite", goalId: docRef.id }
-          );
+          await Promise.all(others.map(async (uid) => {
+            const collab = participantDetails.find(p => p.uid === uid);
+            if (collab) {
+              await sendNotification(
+                [uid],
+                `${user.displayName || user.email} invited you to join "${title.trim()}"`,
+                { 
+                  type: "goal_invite", 
+                  goalId: docRef.id,
+                  goalTitle: title.trim(),
+                  inviterId: user.uid,
+                  inviterName: user.displayName || user.email
+                },
+                {
+                  type: "goal_invite",
+                  priority: "high",
+                  actionRequired: true,
+                  goalTitle: title.trim(),
+                  inviterName: user.displayName || user.email
+                }
+              );
+            }
+          }));
         } catch (e) {
           console.error("Notification error:", e);
         }
@@ -544,6 +957,7 @@ export default function SharedGoalsScreen() {
 
       setCreateVisible(false);
       resetCreateForm();
+      Alert.alert("Success!", "Goal created and invitations sent!");
     } catch (e) {
       console.error("createSharedGoal error", e);
       Alert.alert("Create failed");
@@ -590,22 +1004,19 @@ export default function SharedGoalsScreen() {
         }) 
       });
 
-      // notify others
-      const others = (selectedGoal.participants || []).filter((uid) => uid !== user.uid);
-      if (others.length) {
-        try { 
-          await sendNotification(
-            others, 
-            `${user.displayName || user.email} updated progress on "${selectedGoal.title}"`, 
-            { type: "progress_update", goalId: selectedGoal.id }
-          ); 
-        } catch (e) {
-          console.error("Progress notification error:", e);
-        } 
-      }
+      // ENHANCED: Send progress celebration
+      await sendProgressCelebration(
+        selectedGoal,
+        v,
+        {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          email: user.email
+        }
+      );
 
       setProgressInput("");
-      Alert.alert("Success", "Progress updated successfully!");
+      Alert.alert("Success!", `Added ${v} ${selectedGoal.unit || ""} to the goal!`);
     } catch (e) {
       console.error("addProgress error", e);
       Alert.alert("Failed to update progress");
@@ -723,19 +1134,17 @@ export default function SharedGoalsScreen() {
       // Remove optimistic milestone
       setOptimisticMilestones(prev => prev.filter(milestone => milestone.id !== tempMilestone.id));
 
-      // Notify other participants about new milestone
-      const others = (selectedGoal.participants || []).filter((uid) => uid !== user.uid);
-      if (others.length) {
-        try {
-          await sendNotification(
-            others,
-            `${user.displayName || user.email} added a new milestone to "${selectedGoal.title}"`,
-            { type: "milestone_added", goalId: selectedGoal.id }
-          );
-        } catch (e) {
-          console.error("Milestone notification error:", e);
+      // Enhanced notification for new milestone
+      await sendMilestoneNotification(
+        selectedGoal,
+        { title: originalInput.trim(), index: selectedGoal.milestones?.length || 0 },
+        "added",
+        {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          email: user.email
         }
-      }
+      );
 
       Alert.alert("Success", "Milestone added!");
     } catch (e) {
@@ -775,20 +1184,18 @@ export default function SharedGoalsScreen() {
         }),
       });
 
-      // Notify on milestone completion
+      // Enhanced notification for milestone completion
       if (updated[mIndex].completed) {
-        const others = (data.participants || []).filter((uid) => uid !== user.uid);
-        if (others.length) {
-          try {
-            await sendNotification(
-              others,
-              `${user.displayName || user.email} completed a milestone in "${data.title}"`,
-              { type: "milestone_completed", goalId: selectedGoal.id }
-            );
-          } catch (e) {
-            console.error("Milestone completion notification error:", e);
+        await sendMilestoneNotification(
+          data,
+          { title: updated[mIndex].title, index: mIndex },
+          "completed",
+          {
+            uid: user.uid,
+            displayName: user.displayName || user.email,
+            email: user.email
           }
-        }
+        );
       }
     } catch (e) {
       console.error("toggleMilestone error", e);
@@ -828,6 +1235,18 @@ export default function SharedGoalsScreen() {
                 timestamp: new Date() 
               }),
             });
+            
+            // Send notification to removed participant
+            await sendNotification(
+              [uid],
+              `You were removed from the goal "${selectedGoal.title}"`,
+              { 
+                type: "participant_removed", 
+                goalId: selectedGoal.id,
+                goalTitle: selectedGoal.title
+              }
+            );
+            
             Alert.alert("Success", "Participant removed");
           } catch (e) {
             console.error("remove participant", e);
@@ -850,6 +1269,22 @@ export default function SharedGoalsScreen() {
         style: "destructive",
         onPress: async () => {
           try {
+            // Notify all participants before deletion
+            const participants = selectedGoal.participants || [];
+            await Promise.all(participants.map(async (uid) => {
+              if (uid !== user.uid) {
+                await sendNotification(
+                  [uid],
+                  `The goal "${selectedGoal.title}" was deleted by ${user.displayName || user.email}`,
+                  { 
+                    type: "goal_deleted", 
+                    goalId: selectedGoal.id,
+                    goalTitle: selectedGoal.title
+                  }
+                );
+              }
+            }));
+            
             await deleteDoc(doc(db, path, selectedGoal.id));
             setDetailVisible(false);
             setSelectedGoal(null);
@@ -897,6 +1332,13 @@ export default function SharedGoalsScreen() {
 
     setLoading(true);
     try {
+      const changes = {};
+      if (editTitle !== selectedGoal.title) changes.title = editTitle;
+      if (editDescription !== selectedGoal.description) changes.description = editDescription;
+      if (editDueDate !== selectedGoal.dueDate) changes.dueDate = editDueDate;
+      if (editPriority !== selectedGoal.priority) changes.priority = editPriority;
+      if (editCategory !== selectedGoal.category) changes.category = editCategory;
+
       const updates = {
         title: editTitle.trim(),
         description: editDescription.trim(),
@@ -919,6 +1361,19 @@ export default function SharedGoalsScreen() {
           timestamp: new Date() 
         })
       });
+
+      // Send update notification if there are changes
+      if (Object.keys(changes).length > 0) {
+        await sendGoalUpdateNotification(
+          selectedGoal,
+          {
+            uid: user.uid,
+            displayName: user.displayName || user.email,
+            email: user.email
+          },
+          changes
+        );
+      }
 
       setIsEditing(false);
       Alert.alert("Success", "Goal updated successfully");
@@ -1541,9 +1996,12 @@ export default function SharedGoalsScreen() {
           <Text style={styles.title}>Group Goals</Text>
           <Text style={styles.subtitle}>Collaborate and achieve together</Text>
         </View>
-        <TouchableOpacity style={styles.plus} onPress={() => setCreateVisible(true)}>
-          <Ionicons name="add" size={22} color={COLORS.card} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <NotificationCenter />
+          <TouchableOpacity style={styles.plus} onPress={() => setCreateVisible(true)}>
+            <Ionicons name="add" size={22} color={COLORS.card} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading && !refreshing ? (
@@ -1557,13 +2015,17 @@ export default function SharedGoalsScreen() {
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <Ionicons name="people-outline" size={64} color={COLORS.border} />
-              <Text style={styles.emptyTitle}>No group goals yet</Text>
-              <Text style={styles.emptyText}>Create your first shared goal to start collaborating!</Text>
+              <Text style={styles.emptyTitle}>No shared goals yet</Text>
+              <Text style={styles.emptyText}>
+                {collaborators.length > 0 
+                  ? "Create or get invited to a shared goal to start collaborating!" 
+                  : "Create your first shared goal or ask to join an existing one!"}
+              </Text>
               <TouchableOpacity 
                 style={styles.createFirstButton}
                 onPress={() => setCreateVisible(true)}
               >
-                <Text style={styles.createFirstButtonText}>Create Your First Goal</Text>
+                <Text style={styles.createFirstButtonText}>Create Shared Goal</Text>
               </TouchableOpacity>
             </View>
           }
@@ -2294,6 +2756,111 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   
+  // Notification Styles
+  notificationButton: {
+    position: 'relative',
+    padding: 8,
+    marginRight: 12,
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: COLORS.error,
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.card,
+  },
+  notificationBadgeText: {
+    color: COLORS.card,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  notificationHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.card,
+  },
+  notificationTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  notificationSubtitle: {
+    fontSize: 14,
+    color: COLORS.softText,
+    marginTop: 2,
+  },
+  markAllReadText: {
+    color: COLORS.warm,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  notificationItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.card,
+  },
+  notificationItemUnread: {
+    backgroundColor: COLORS.accent,
+  },
+  notificationIcon: {
+    marginRight: 12,
+  },
+  notificationIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationContent: {
+    flex: 1,
+  },
+  notificationMessage: {
+    fontSize: 14,
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+  notificationTime: {
+    fontSize: 12,
+    color: COLORS.softText,
+  },
+  notificationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.warm,
+  },
+  emptyNotifications: {
+    alignItems: 'center',
+    padding: 40,
+  },
+  emptyNotificationText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginTop: 16,
+  },
+  emptyNotificationSubtext: {
+    fontSize: 14,
+    color: COLORS.softText,
+    marginTop: 8,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  
   // Common Elements
   label: { fontWeight: "700", color: COLORS.text, marginTop: 16, marginBottom: 6 },
   input: { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 12, fontSize: 16 },
@@ -2304,6 +2871,7 @@ const styles = StyleSheet.create({
   cancelBtnText: { color: COLORS.text, fontWeight: '600' },
   saveBtn: { backgroundColor: COLORS.warm },
   saveBtnText: { color: COLORS.card, fontWeight: '600' },
+  sectionTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 12 },
   
   // Empty State
   emptyState: { alignItems: 'center', padding: 40 },

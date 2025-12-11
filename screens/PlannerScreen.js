@@ -1,10 +1,10 @@
 // PlannerScreen.js
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from '@react-native-async-storage/async-storage'; // ADDED: Offline Storage
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
-import * as Notifications from 'expo-notifications'; // ADDED: Notifications
+import * as Notifications from 'expo-notifications';
 import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,6 +15,7 @@ import {
   Modal,
   Platform,
   ScrollView,
+  Switch,
   StyleSheet,
   Text,
   TextInput,
@@ -40,12 +41,12 @@ import { db } from "../firebaseConfig";
 
 const { width } = Dimensions.get("window");
 
-// ADDED: Notification Handler Configuration
+// Enhanced Notification Handler Configuration
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: true,
-    shouldSetBadge: false,
+    shouldSetBadge: true,
   }),
 });
 
@@ -63,13 +64,15 @@ const COLORS = {
   shadowDark: "rgba(0,0,0,0.06)",
   danger: "#FF6347",
   success: "#5D8B7E",
+  info: "#2196F3",
+  warning: "#FFA726",
 };
 
 // CATEGORY UPDATE: Updated categories to Work, Personal, Other
 const CATEGORY_COLORS = {
   work: COLORS.accentWarm,
   personal: COLORS.accentBlush,
-  other: COLORS.sage, // Changed from study to other
+  other: COLORS.sage,
 };
 
 const PRIORITY_COLORS = {
@@ -167,18 +170,21 @@ function parseNaturalDate(text) {
 }
 
 /* -----------------------
-   useReducer for form state
+   useReducer for form state - UPDATED
    ----------------------- */
 const initialFormState = {
   title: "",
   description: "",
   dueDate: new Date(),
   dueTime: new Date(),
-  category: "personal", // Updated default category
+  category: "personal",
   priority: "medium",
   recurrence: "none",
   isEditing: false,
   currentPlannerItem: null,
+  enableNotifications: true,
+  notificationTime: new Date(new Date().setMinutes(new Date().getMinutes() - 30)),
+  customNotificationMessage: "",
 };
 
 function formReducer(state, action) {
@@ -202,9 +208,14 @@ function formReducer(state, action) {
           action.item.dueDate instanceof Date
             ? action.item.dueDate
             : new Date(action.item.dueDate),
-        category: action.item.category || "personal", // Updated default category
+        category: action.item.category || "personal",
         priority: action.item.priority || "medium",
         recurrence: action.item.recurrence || "none",
+        enableNotifications: action.item.enableNotifications !== false,
+        notificationTime: action.item.notificationTime 
+          ? new Date(action.item.notificationTime)
+          : new Date(new Date(action.item.dueDate).setMinutes(new Date(action.item.dueDate).getMinutes() - 30)),
+        customNotificationMessage: action.item.customNotificationMessage || "",
       };
     default:
       return state;
@@ -212,7 +223,7 @@ function formReducer(state, action) {
 }
 
 /* -----------------------
-   Task Item component
+   Task Item component - UPDATED with better actions
    ----------------------- */
 const TaskItem = React.memo(function TaskItemComp({
   item,
@@ -228,7 +239,9 @@ const TaskItem = React.memo(function TaskItemComp({
   onLongPressSelect,
   selectionMode,
   selected,
-  confirmDelete, // Added for new delete button flow
+  confirmDelete,
+  openNotificationSettings,
+  openPlannerModal, // NEW: Added edit handler
 }) {
   const swipeableRef = useRef(null);
 
@@ -289,7 +302,6 @@ const TaskItem = React.memo(function TaskItemComp({
   };
 
   const handleSwipeDelete = () => {
-    // Swipe delete bypasses confirmation for fast action
     triggerHaptic("heavy");
     handleDeletePlannerItem(item.id);
     swipeableRef.current?.close();
@@ -331,6 +343,14 @@ const TaskItem = React.memo(function TaskItemComp({
                 <Text style={styles.metaText}>
                   {item.dueDate ? new Date(item.dueDate).toLocaleDateString() : "—"}
                 </Text>
+                {item.enableNotifications !== false && !item.completed && (
+                  <Ionicons 
+                    name={item.notificationId ? "notifications" : "notifications-outline"} 
+                    size={14} 
+                    color={item.notificationId ? COLORS.info : COLORS.textSecondary}
+                    style={{ marginLeft: 8 }}
+                  />
+                )}
               </View>
             </View>
 
@@ -342,7 +362,7 @@ const TaskItem = React.memo(function TaskItemComp({
             )}
           </View>
 
-          {/* Collapsed card actions with new Delete button */}
+          {/* Collapsed card actions - UPDATED with Edit and Delete */}
           {!isExpanded && (
             <View style={styles.cardActions}>
               <TouchableOpacity onPress={() => handleReorder(item, "up")} disabled={isFirst} style={[styles.iconBtn, isFirst && { opacity: 0.3 }]}>
@@ -351,7 +371,12 @@ const TaskItem = React.memo(function TaskItemComp({
               <TouchableOpacity onPress={() => handleReorder(item, "down")} disabled={isLast} style={[styles.iconBtn, isLast && { opacity: 0.3 }]}>
                 <Ionicons name="arrow-down-outline" size={20} color="#666" />
               </TouchableOpacity>
-              {/* New Delete Button */}
+              <TouchableOpacity onPress={() => openNotificationSettings(item)} style={[styles.iconBtn, { marginLeft: 6 }]}>
+                <Ionicons name="notifications-outline" size={20} color={COLORS.info} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => openPlannerModal(item)} style={[styles.iconBtn, { marginLeft: 6 }]}>
+                <Ionicons name="create-outline" size={20} color={COLORS.sage} />
+              </TouchableOpacity>
               <TouchableOpacity onPress={() => confirmDelete(item)} style={[styles.iconBtn, { marginLeft: 6 }]}>
                 <Ionicons name="trash-outline" size={20} color={COLORS.danger} />
               </TouchableOpacity>
@@ -374,7 +399,6 @@ const TaskItem = React.memo(function TaskItemComp({
               </View>
             ))}
 
-            {/* Inline add subtask handled by parent via the same handler pattern */}
             <TextInput
               placeholder="+ Add new subtask..."
               placeholderTextColor="#A98467"
@@ -494,7 +518,168 @@ const CalendarGrid = ({ tasks, onDateSelect, selectedDate }) => {
 };
 
 /* -----------------------
-   Main Planner Screen
+   Notification List Component - NEW
+   ----------------------- */
+const NotificationList = ({ visible, onClose, scheduledNotifications }) => {
+  const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (visible) {
+      loadNotifications();
+    }
+  }, [visible]);
+
+  const loadNotifications = async () => {
+    setLoading(true);
+    try {
+      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+      const formatted = scheduled.map((notification, index) => ({
+        id: notification.identifier || `notification-${index}`,
+        title: notification.content.title || 'Task Reminder',
+        body: notification.content.body || '',
+        date: notification.trigger.date ? new Date(notification.trigger.date) : null,
+        taskId: notification.content.data?.taskId,
+      })).sort((a, b) => (a.date?.getTime() || 0) - (b.date?.getTime() || 0));
+      
+      setNotifications(formatted);
+    } catch (error) {
+      console.error('Error loading notifications:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatNotificationTime = (date) => {
+    if (!date) return 'No date';
+    const now = new Date();
+    const diffMs = date.getTime() - now.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffMins < 0) return 'Past due';
+    if (diffMins < 60) return `In ${diffMins} min`;
+    if (diffHours < 24) return `In ${diffHours} hour${diffHours !== 1 ? 's' : ''}`;
+    return `In ${diffDays} day${diffDays !== 1 ? 's' : ''}`;
+  };
+
+  const handleClearAll = async () => {
+    Alert.alert(
+      "Clear All Notifications",
+      "Are you sure you want to clear all scheduled notifications?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear All",
+          style: "destructive",
+          onPress: async () => {
+            await Notifications.cancelAllScheduledNotificationsAsync();
+            loadNotifications();
+            triggerHaptic("heavy");
+          },
+        },
+      ]
+    );
+  };
+
+  const handleCancelNotification = async (notificationId) => {
+    try {
+      await Notifications.cancelScheduledNotificationAsync(notificationId);
+      loadNotifications();
+      triggerHaptic("medium");
+    } catch (error) {
+      console.error('Error cancelling notification:', error);
+    }
+  };
+
+  if (!visible) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <View style={styles.notificationModalOverlay}>
+        <View style={styles.notificationModalContainer}>
+          <View style={styles.notificationModalHeader}>
+            <Text style={styles.notificationModalTitle}>Scheduled Notifications</Text>
+            <TouchableOpacity onPress={onClose}>
+              <Ionicons name="close" size={24} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.notificationModalContent}>
+            {loading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={COLORS.sage} />
+                <Text style={styles.loadingText}>Loading notifications...</Text>
+              </View>
+            ) : notifications.length === 0 ? (
+              <View style={styles.emptyNotificationsContainer}>
+                <Ionicons name="notifications-off-outline" size={48} color={COLORS.textSecondary} />
+                <Text style={styles.emptyNotificationsText}>No scheduled notifications</Text>
+                <Text style={styles.emptyNotificationsSubtext}>
+                  Notifications will appear here when tasks are due
+                </Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.notificationHeaderRow}>
+                  <Text style={styles.notificationCount}>
+                    {notifications.length} scheduled notification{notifications.length !== 1 ? 's' : ''}
+                  </Text>
+                  <TouchableOpacity onPress={handleClearAll} style={styles.clearAllButton}>
+                    <Text style={styles.clearAllText}>Clear All</Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <ScrollView style={styles.notificationList}>
+                  {notifications.map((notification) => (
+                    <View key={notification.id} style={styles.notificationItem}>
+                      <View style={styles.notificationItemHeader}>
+                        <Ionicons name="notifications" size={20} color={COLORS.info} />
+                        <Text style={styles.notificationItemTitle} numberOfLines={1}>
+                          {notification.title.replace('📅 Task Reminder: ', '')}
+                        </Text>
+                        <TouchableOpacity 
+                          onPress={() => handleCancelNotification(notification.id)}
+                          style={styles.cancelNotificationButton}
+                        >
+                          <Ionicons name="close-circle" size={18} color={COLORS.danger} />
+                        </TouchableOpacity>
+                      </View>
+                      <Text style={styles.notificationItemBody} numberOfLines={2}>
+                        {notification.body}
+                      </Text>
+                      <View style={styles.notificationItemFooter}>
+                        <Text style={styles.notificationItemTime}>
+                          {formatNotificationTime(notification.date)}
+                        </Text>
+                        <Text style={styles.notificationItemDate}>
+                          {notification.date?.toLocaleString() || 'No date'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </>
+            )}
+          </View>
+
+          <TouchableOpacity style={styles.notificationModalCloseButton} onPress={onClose}>
+            <Text style={styles.notificationModalCloseText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+/* -----------------------
+   Main Planner Screen - UPDATED
    ----------------------- */
 export default function PlannerScreen() {
   const navigation = useNavigation();
@@ -520,19 +705,26 @@ export default function PlannerScreen() {
   // Date picker visibility
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showNotificationTimePicker, setShowNotificationTimePicker] = useState(false);
 
-  // Delete Confirmation Modal states (NEW)
+  // Delete Confirmation Modal states
   const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
   const [itemToDelete, setItemToDelete] = useState(null);
+
+  // Notification states
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
+  const [notificationItem, setNotificationItem] = useState(null);
+  const [showNotificationList, setShowNotificationList] = useState(false); // NEW
+  const [scheduledNotifications, setScheduledNotifications] = useState([]); // NEW
 
   // Form reducer
   const [form, dispatch] = useReducer(formReducer, initialFormState);
 
-  // categories/priorities (Updated categories list)
+  // categories/priorities
   const categories = [
     { key: "work", label: "Work" },
     { key: "personal", label: "Personal" },
-    { key: "other", label: "Other" }, // Updated from study
+    { key: "other", label: "Other" },
   ];
   const priorities = [
     { key: "high", label: "High" },
@@ -540,66 +732,186 @@ export default function PlannerScreen() {
     { key: "low", label: "Low" },
   ];
 
-  // ADDED: Request Notification Permissions on mount
+  // Notification time options
+  const notificationTimes = [
+    { label: "At due time", minutes: 0 },
+    { label: "15 min before", minutes: -15 },
+    { label: "30 min before", minutes: -30 },
+    { label: "1 hour before", minutes: -60 },
+    { label: "1 day before", minutes: -1440 },
+    { label: "Custom", minutes: null },
+  ];
+
+  /* -----------------------
+     Enhanced Notification Functions
+     ----------------------- */
+  // Request notification permissions
   useEffect(() => {
     async function requestPermissions() {
       const { status } = await Notifications.getPermissionsAsync();
       if (status !== 'granted') {
-        await Notifications.requestPermissionsAsync();
+        const { status: newStatus } = await Notifications.requestPermissionsAsync();
+        if (newStatus === 'granted') {
+          console.log("Notification permissions granted");
+        }
       }
     }
     requestPermissions();
+    
+    // Listen for notifications when app is in foreground
+    const subscription = Notifications.addNotificationReceivedListener(notification => {
+      console.log('Notification received:', notification);
+    });
+    
+    return () => subscription.remove();
   }, []);
 
-  // ADDED: Offline First - Load Cache on mount
-  useEffect(() => {
-    async function loadCache() {
-      if (!user) return;
+  // Schedule notification for a single task
+const scheduleTaskNotification = async (task) => {
+  if (!task.enableNotifications || task.completed || !task.dueDate) {
+    return;
+  }
+
+  // CRITICAL: Verify task exists in database first
+  if (!task.id) {
+    console.error("Cannot schedule notification: task has no ID");
+    return;
+  }
+
+  try {
+    let notificationTime = new Date(task.dueDate);
+    if (task.notificationTime) {
+      notificationTime = new Date(task.notificationTime);
+    } else {
+      notificationTime.setMinutes(notificationTime.getMinutes() - 30);
+    }
+
+    if (notificationTime <= new Date()) {
+      return;
+    }
+
+    if (task.notificationId) {
+      await Notifications.cancelScheduledNotificationAsync(task.notificationId);
+    }
+
+    const notificationId = `task_${task.id}_${Date.now()}`;
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `📅 Task Reminder: ${task.title}`,
+        body: task.customNotificationMessage || `"${task.title}" is due soon!`,
+        data: { 
+          taskId: task.id, 
+          type: 'task_reminder',
+          screen: 'Planner'
+        },
+        sound: true,
+        priority: Notifications.AndroidNotificationPriority.HIGH,
+      },
+      trigger: {
+        date: notificationTime,
+      },
+    });
+
+    // Only update if component is still mounted and doc exists
+    if (isMountedRef.current) {
       try {
-        const cachedData = await AsyncStorage.getItem(`planner_cache_${user.uid}`);
-        if (cachedData) {
-          const parsed = JSON.parse(cachedData).map(item => ({
-            ...item,
-            // Rehydrate date strings back to Date objects
-            dueDate: item.dueDate ? new Date(item.dueDate) : new Date(),
-          }));
-          setPlannerItems(parsed);
-        }
-      } catch (error) {
-        console.log("Failed to load cache", error);
+        await updateDoc(doc(db, "planner", task.id), { 
+          notificationId,
+          notificationTime: notificationTime 
+        });
+      } catch (updateError) {
+        console.error("Failed to update notificationId:", updateError);
       }
     }
-    loadCache();
-  }, [user]);
 
-  // ADDED: Schedule Notifications helper
-  const scheduleTaskNotifications = async (tasks) => {
-    // Cancel all previous notifications to avoid duplicates
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    console.log(`Scheduled notification for task: ${task.title} at ${notificationTime}`);
+  } catch (error) {
+    console.error("Error scheduling notification:", error);
+    // Don't throw - let the app continue even if notification fails
+  }
+};
 
-    const now = new Date();
-    const upcomingTasks = tasks.filter(t => !t.completed && t.dueDate && new Date(t.dueDate) > now);
-
-    for (const task of upcomingTasks) {
-      const triggerDate = new Date(task.dueDate);
-      
-      // Only schedule if it's in the future
-      if (triggerDate > now) {
-        try {
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: `Task Due: ${task.title}`,
-              body: task.description || "You have a task due now.",
-              sound: true,
-            },
-            trigger: {
-              date: triggerDate, // Schedule at the exact due date time
-            },
-          });
-        } catch (e) {
-          console.log("Error scheduling notification for task", task.title, e);
-        }
+  // Cancel notification for a task
+  const cancelTaskNotification = async (taskId) => {
+    try {
+      const task = plannerItems.find(t => t.id === taskId);
+      if (task?.notificationId) {
+        await Notifications.cancelScheduledNotificationAsync(task.notificationId);
+        await updateDoc(doc(db, "planner", taskId), { 
+          notificationId: null,
+          notificationTime: null 
+        });
       }
+    } catch (error) {
+      console.error("Error canceling notification:", error);
+    }
+  };
+
+  // Clear all task notifications
+  const clearAllTaskNotifications = async () => {
+    try {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+      
+      // Clear notification IDs from all tasks
+      const updatePromises = plannerItems.map(item => 
+        updateDoc(doc(db, "planner", item.id), { 
+          notificationId: null,
+          notificationTime: null 
+        })
+      );
+      await Promise.all(updatePromises);
+      
+      showMessage("Cleared all notifications");
+    } catch (error) {
+      console.error("Error clearing all notifications:", error);
+      showMessage("Failed to clear notifications");
+    }
+  };
+
+  // Load scheduled notifications
+  const loadScheduledNotifications = async () => {
+    try {
+      const notifications = await Notifications.getAllScheduledNotificationsAsync();
+      setScheduledNotifications(notifications);
+      return notifications;
+    } catch (error) {
+      console.error("Error loading notifications:", error);
+      return [];
+    }
+  };
+
+  // Open notification settings for a specific task
+  const openNotificationSettings = (item) => {
+    triggerHaptic("light");
+    setNotificationItem(item);
+    setShowNotificationSettings(true);
+  };
+
+  // Save notification settings
+  const saveNotificationSettings = async () => {
+    if (!notificationItem) return;
+    
+    try {
+      await updateDoc(doc(db, "planner", notificationItem.id), {
+        enableNotifications: notificationItem.enableNotifications,
+        notificationTime: notificationItem.notificationTime,
+        customNotificationMessage: notificationItem.customNotificationMessage,
+      });
+
+      // Reschedule notification if enabled
+      if (notificationItem.enableNotifications) {
+        await scheduleTaskNotification(notificationItem);
+      } else {
+        await cancelTaskNotification(notificationItem.id);
+      }
+
+      showMessage("Notification settings updated");
+      setShowNotificationSettings(false);
+      setNotificationItem(null);
+    } catch (error) {
+      console.error("Error saving notification settings:", error);
+      showMessage("Failed to update notification settings");
     }
   };
 
@@ -624,7 +936,19 @@ export default function PlannerScreen() {
           } else if (!dueDate) {
             dueDate = new Date();
           }
-          return { id: d.id, ...data, dueDate };
+
+          let notificationTime = data.notificationTime;
+          if (notificationTime && typeof notificationTime.toDate === "function") {
+            notificationTime = notificationTime.toDate();
+          }
+
+          return { 
+            id: d.id, 
+            ...data, 
+            dueDate,
+            notificationTime,
+            enableNotifications: data.enableNotifications !== false,
+          };
         });
 
         // sort by order then date
@@ -637,9 +961,11 @@ export default function PlannerScreen() {
 
         setPlannerItems(items);
 
-        // ADDED: Update Cache and Schedule Notifications
+        // Update Cache
         AsyncStorage.setItem(`planner_cache_${user.uid}`, JSON.stringify(items));
-        scheduleTaskNotifications(items);
+        
+        // Schedule notifications for all tasks
+        scheduleAllTaskNotifications(items);
       },
       (err) => {
         console.error("planner onSnapshot error", err);
@@ -648,6 +974,27 @@ export default function PlannerScreen() {
 
     return () => unsub();
   }, [user]);
+
+  // Schedule notifications for all upcoming tasks
+  const scheduleAllTaskNotifications = async (tasks = plannerItems) => {
+    try {
+      // Filter only upcoming, enabled tasks
+      const upcomingTasks = tasks.filter(t => 
+        t.enableNotifications !== false && 
+        !t.completed && 
+        t.dueDate && 
+        new Date(t.dueDate) > new Date()
+      );
+
+      for (const task of upcomingTasks) {
+        await scheduleTaskNotification(task);
+      }
+
+      console.log(`Scheduled ${upcomingTasks.length} task notifications`);
+    } catch (error) {
+      console.error("Error scheduling all notifications:", error);
+    }
+  };
 
   /* -----------------------
      Filtering and search
@@ -693,19 +1040,28 @@ export default function PlannerScreen() {
     }
     setShowDatePicker(false);
     setShowTimePicker(false);
+    setShowNotificationTimePicker(false);
     setIsFormModalVisible(true);
   };
 
   // auto-parse date suggestions from title/description
-  useEffect(() => {
-    // only when user is editing/typing and not explicitly setting date/time
-    const parsed = parseNaturalDate(form.title + " " + form.description);
-    if (parsed) {
-      dispatch({ type: "SET", key: "dueDate", value: parsed });
-      dispatch({ type: "SET", key: "dueTime", value: parsed });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.title, form.description]);
+ const parsedDateRef = useRef(null);
+
+useEffect(() => {
+  const combined = form.title + " " + form.description;
+  
+  // Only parse if text actually changed
+  if (combined === parsedDateRef.current) return;
+  parsedDateRef.current = combined;
+  
+  const parsed = parseNaturalDate(combined);
+  if (parsed && !form.isEditing) { // Don't override when editing
+    dispatch({ type: "SET", key: "dueDate", value: parsed });
+    dispatch({ type: "SET", key: "dueTime", value: parsed });
+    const notificationTime = new Date(parsed.getTime() - 30 * 60000);
+    dispatch({ type: "SET", key: "notificationTime", value: notificationTime });
+  }
+}, [form.title, form.description, form.isEditing]);
 
   /* -----------------------
      Save (create or update)
@@ -743,17 +1099,53 @@ export default function PlannerScreen() {
         priority: form.priority,
         recurrence: form.recurrence,
         subtasks: form.currentPlannerItem?.subtasks || [],
+        // Notification settings
+        enableNotifications: form.enableNotifications,
+        notificationTime: form.enableNotifications ? form.notificationTime : null,
+        customNotificationMessage: form.customNotificationMessage.trim(),
       };
 
       if (form.isEditing && form.currentPlannerItem) {
-        // keep original order
         await updateDoc(doc(db, "planner", form.currentPlannerItem.id), payload);
         showMessage("Task updated");
+        
+        // Reschedule notification if enabled
+        if (form.enableNotifications) {
+          const updatedTask = { id: form.currentPlannerItem.id, ...payload };
+          await scheduleTaskNotification(updatedTask);
+        } else {
+          await cancelTaskNotification(form.currentPlannerItem.id);
+        }
       } else {
-        // compute next order (place at top with highest number)
         const maxOrder = plannerItems.reduce((max, item) => Math.max(max, item.order || 0), 0) + 1;
-        await addDoc(collection(db, "planner"), { ...payload, order: maxOrder, createdAt: serverTimestamp() });
-        showMessage("Task added");
+        const docRef = await addDoc(collection(db, "planner"), { 
+  ...payload, 
+  order: maxOrder, 
+  createdAt: serverTimestamp(),
+  notificationId: null, // Add placeholder
+});
+
+// Wait for doc to be created, then schedule
+if (form.enableNotifications) {
+  const newTask = { 
+    id: docRef.id, 
+    ...payload,
+    dueDate: combined 
+  };
+  // Schedule notification separately
+  try {
+    await scheduleTaskNotification(newTask);
+  } catch (error) {
+    console.error("Notification scheduling failed:", error);
+  }
+}
+showMessage("Task added");
+        
+        // Schedule notification if enabled
+        if (form.enableNotifications) {
+          const newTask = { id: docRef.id, ...payload };
+          await scheduleTaskNotification(newTask);
+        }
       }
 
       setIsFormModalVisible(false);
@@ -777,26 +1169,31 @@ export default function PlannerScreen() {
 
   // Function to handle the actual deletion (used by both swipe and confirmation modal)
   const handleDeletePlannerItem = async (id = null) => {
-    let itemId = id;
-    if (!itemId && itemToDelete) {
-        itemId = itemToDelete.id;
-    }
-    if (!itemId) return;
+  let itemId = id;
+  if (!itemId && itemToDelete) {
+    itemId = itemToDelete.id;
+  }
+  
+  if (!itemId) {
+    console.error("Cannot delete: no item ID provided");
+    return;
+  }
 
-    triggerHaptic("heavy");
-    try {
-      await deleteDoc(doc(db, "planner", itemId));
-      showMessage("Deleted");
-      // Only clear modal state if we were in the confirmation flow
-      if (itemToDelete && itemToDelete.id === itemId) {
-          setIsConfirmModalVisible(false);
-          setItemToDelete(null);
-      }
-    } catch (err) {
-      console.error("delete error", err);
-      showMessage("Delete failed");
+  triggerHaptic("heavy");
+  try {
+    await cancelTaskNotification(itemId);
+    await deleteDoc(doc(db, "planner", itemId));
+    showMessage("Deleted");
+    
+    if (itemToDelete && itemToDelete.id === itemId) {
+      setIsConfirmModalVisible(false);
+      setItemToDelete(null);
     }
-  };
+  } catch (err) {
+    console.error("delete error", err);
+    showMessage("Delete failed");
+  }
+};
 
   /* -----------------------
      Toggle Completed
@@ -805,6 +1202,17 @@ export default function PlannerScreen() {
     playTapSound();
     try {
       await updateDoc(doc(db, "planner", item.id), { completed: !item.completed });
+      
+      // Cancel notification if task is completed
+      if (!item.completed) {
+        // If marking complete, cancel notification
+        await cancelTaskNotification(item.id);
+      } else {
+        // If marking incomplete, reschedule notification if enabled
+        if (item.enableNotifications) {
+          await scheduleTaskNotification(item);
+        }
+      }
     } catch (err) {
       console.error("toggle complete err", err);
     }
@@ -914,6 +1322,10 @@ export default function PlannerScreen() {
     setLoading(true);
     try {
       await Promise.all(selectedIds.map((id) => updateDoc(doc(db, "planner", id), { completed: true })));
+      
+      // Cancel notifications for all completed tasks
+      await Promise.all(selectedIds.map((id) => cancelTaskNotification(id)));
+      
       showMessage("Marked completed");
       setSelectionMode(false);
       setSelectedIds([]);
@@ -935,6 +1347,10 @@ export default function PlannerScreen() {
         onPress: async () => {
           setLoading(true);
           try {
+            // Cancel notifications first
+            await Promise.all(selectedIds.map((id) => cancelTaskNotification(id)));
+            
+            // Then delete from database
             await Promise.all(selectedIds.map((id) => deleteDoc(doc(db, "planner", id))));
             showMessage("Deleted");
             setSelectionMode(false);
@@ -969,11 +1385,20 @@ export default function PlannerScreen() {
   };
 
   /* -----------------------
-     Render
+     Notification Management - UPDATED
+     ----------------------- */
+  const handleNotificationButtonPress = async () => {
+    triggerHaptic("light");
+    await loadScheduledNotifications();
+    setShowNotificationList(true);
+  };
+
+  /* -----------------------
+     Render - UPDATED
      ----------------------- */
   return (
     <View style={styles.screen}>
-      {/* Header */}
+      {/* Header with Updated Notification Button */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Planner</Text>
 
@@ -995,10 +1420,18 @@ export default function PlannerScreen() {
           )}
 
           {!selectionMode && (
-            <TouchableOpacity style={styles.headerAdd} onPress={() => openPlannerModal()} activeOpacity={0.85}>
-              <Ionicons name="add" size={20} color={COLORS.accentBlush} />
-              <Text style={styles.headerAddText}>Add</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity 
+                style={[styles.headerIconBtn, { marginRight: 10 }]} 
+                onPress={handleNotificationButtonPress}
+              >
+                <Ionicons name="notifications-outline" size={20} color={COLORS.textPrimary} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.headerAdd} onPress={() => openPlannerModal()} activeOpacity={0.85}>
+                <Ionicons name="add" size={20} color={COLORS.accentBlush} />
+                <Text style={styles.headerAddText}>Add</Text>
+              </TouchableOpacity>
+            </>
           )}
         </View>
       </View>
@@ -1072,14 +1505,16 @@ export default function PlannerScreen() {
               onLongPressSelect={onLongPressSelect}
               selectionMode={selectionMode}
               selected={selectedIds.includes(item.id)}
-              confirmDelete={confirmDelete} // Pass confirm delete handler
+              confirmDelete={confirmDelete}
+              openNotificationSettings={openNotificationSettings}
+              openPlannerModal={openPlannerModal} // NEW: Pass edit handler
             />
           ))
         )}
       </ScrollView>
 
       {/* Form Modal */}
-      <Modal visible={isFormModalVisible} transparent animationType="slide">
+      <Modal visible={isFormModalVisible} transparent animationType="slide" onRequestClose={() => setIsFormModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
@@ -1089,7 +1524,7 @@ export default function PlannerScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: Dimensions.get("window").height * 0.72 }}>
+            <ScrollView style={{ maxHeight: Dimensions.get("window").height * 0.72 }} showsVerticalScrollIndicator={false}>
               <Text style={styles.inputLabel}>Title</Text>
               <TextInput value={form.title} onChangeText={(t) => dispatch({ type: "SET", key: "title", value: t })} style={styles.input} placeholder="Task title" />
 
@@ -1131,7 +1566,7 @@ export default function PlannerScreen() {
 
               <Text style={styles.inputLabel}>Category</Text>
               <View style={styles.categoryRow}>
-                {categories.map((c) => { // Updated categories array is mapped here
+                {categories.map((c) => {
                   const active = c.key === form.category;
                   return (
                     <TouchableOpacity key={c.key} style={[styles.catBtn, active && { backgroundColor: CATEGORY_COLORS[c.key] }]} onPress={() => dispatch({ type: "SET", key: "category", value: c.key })}>
@@ -1152,6 +1587,90 @@ export default function PlannerScreen() {
                   );
                 })}
               </View>
+
+              {/* Notification Settings in Form */}
+              <View style={styles.notificationSection}>
+                <View style={styles.notificationHeader}>
+                  <Ionicons name="notifications-outline" size={18} color={COLORS.sage} />
+                  <Text style={[styles.inputLabel, { marginLeft: 8 }]}>Notifications</Text>
+                  <Switch
+                    value={form.enableNotifications}
+                    onValueChange={(value) => dispatch({ type: "SET", key: "enableNotifications", value })}
+                    trackColor={{ false: "#ccc", true: COLORS.sage }}
+                    thumbColor={form.enableNotifications ? "#fff" : "#fff"}
+                    style={{ marginLeft: 'auto' }}
+                  />
+                </View>
+
+                {form.enableNotifications && (
+                  <>
+                    <Text style={[styles.inputLabel, { marginTop: 12 }]}>Remind me</Text>
+                    <View style={styles.notificationTimeGrid}>
+                      {notificationTimes.map((timeOption) => {
+                        const isActive = form.notificationTime && 
+                          (timeOption.minutes === null || 
+                           form.notificationTime.getTime() === 
+                           new Date(form.dueDate.getTime() + timeOption.minutes * 60000).getTime());
+                        
+                        return (
+                          <TouchableOpacity
+                            key={timeOption.label}
+                            style={[
+                              styles.notificationTimeBtn,
+                              isActive && styles.notificationTimeBtnActive
+                            ]}
+                            onPress={() => {
+                              if (timeOption.minutes === null) {
+                                setShowNotificationTimePicker(true);
+                              } else {
+                                const newTime = new Date(form.dueDate.getTime() + timeOption.minutes * 60000);
+                                dispatch({ type: "SET", key: "notificationTime", value: newTime });
+                              }
+                            }}
+                          >
+                            <Text style={[
+                              styles.notificationTimeText,
+                              isActive && styles.notificationTimeTextActive
+                            ]}>
+                              {timeOption.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
+                    {showNotificationTimePicker && (
+                      <View style={styles.customTimePicker}>
+                        <Text style={[styles.inputLabel, { marginBottom: 8 }]}>Custom Reminder Time</Text>
+                        <DateTimePicker
+                          value={form.notificationTime}
+                          mode="datetime"
+                          display={Platform.OS === "ios" ? "inline" : "spinner"}
+                          onChange={(e, d) => {
+                            if (e.type === "set" && d) {
+                              dispatch({ type: "SET", key: "notificationTime", value: d });
+                            }
+                            setShowNotificationTimePicker(false);
+                          }}
+                        />
+                      </View>
+                    )}
+
+                    <Text style={[styles.inputLabel, { marginTop: 12 }]}>Custom Message (optional)</Text>
+                    <TextInput
+                      value={form.customNotificationMessage}
+                      onChangeText={(t) => dispatch({ type: "SET", key: "customNotificationMessage", value: t })}
+                      style={[styles.input, { height: 60 }]}
+                      placeholder="Custom notification message..."
+                      multiline
+                    />
+
+                    <Text style={styles.notificationHint}>
+                      You'll be notified at: {form.notificationTime.toLocaleString()}
+                    </Text>
+                  </>
+                )}
+              </View>
             </ScrollView>
 
             <TouchableOpacity style={styles.saveBtn} onPress={handleSavePlannerItem} disabled={loading}>
@@ -1161,11 +1680,98 @@ export default function PlannerScreen() {
         </View>
       </Modal>
 
-      {/* Delete Confirmation Modal (NEW) */}
+      {/* Notification List Modal - NEW */}
+      <NotificationList
+        visible={showNotificationList}
+        onClose={() => setShowNotificationList(false)}
+        scheduledNotifications={scheduledNotifications}
+      />
+
+      {/* Notification Settings Modal for Individual Tasks */}
+      <Modal visible={showNotificationSettings} transparent animationType="fade" onRequestClose={() => setShowNotificationSettings(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Notification Settings</Text>
+              <TouchableOpacity onPress={() => setShowNotificationSettings(false)}>
+                <Ionicons name="close" size={20} color="#666" />
+              </TouchableOpacity>
+            </View>
+
+            {notificationItem && (
+              <>
+                <View style={styles.notificationItemPreview}>
+                  <Text style={styles.notificationItemTitle}>{notificationItem.title}</Text>
+                  <Text style={styles.notificationItemDate}>
+                    Due: {new Date(notificationItem.dueDate).toLocaleString()}
+                  </Text>
+                </View>
+
+                <View style={styles.notificationSettingRow}>
+                  <Text style={styles.settingLabel}>Enable Notifications</Text>
+                  <Switch
+                    value={notificationItem.enableNotifications !== false}
+                    onValueChange={(value) => setNotificationItem({...notificationItem, enableNotifications: value})}
+                    trackColor={{ false: "#ccc", true: COLORS.sage }}
+                    thumbColor={notificationItem.enableNotifications !== false ? "#fff" : "#fff"}
+                  />
+                </View>
+
+                {notificationItem.enableNotifications !== false && (
+                  <>
+                    <Text style={styles.inputLabel}>Reminder Time</Text>
+                    <TouchableOpacity 
+                      style={[styles.input, styles.dateTimeButton]}
+                      onPress={() => {
+                        // In a production app, you would open a proper time picker here
+                        showMessage("Time picker would open here");
+                      }}
+                    >
+                      <Ionicons name="time-outline" size={18} color={COLORS.sage} />
+                      <Text style={styles.dateTimeText}>
+                        {notificationItem.notificationTime 
+                          ? new Date(notificationItem.notificationTime).toLocaleString()
+                          : "Set reminder time"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <Text style={styles.inputLabel}>Custom Message</Text>
+                    <TextInput
+                      value={notificationItem.customNotificationMessage || ""}
+                      onChangeText={(text) => setNotificationItem({...notificationItem, customNotificationMessage: text})}
+                      style={[styles.input, { height: 60 }]}
+                      placeholder="Custom notification message..."
+                      multiline
+                    />
+                  </>
+                )}
+
+                <TouchableOpacity style={styles.saveBtn} onPress={saveNotificationSettings}>
+                  <Text style={styles.saveBtnText}>Save Settings</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.saveBtn, { backgroundColor: COLORS.danger, marginTop: 10 }]}
+                  onPress={async () => {
+                    await cancelTaskNotification(notificationItem.id);
+                    showMessage("Notification cancelled");
+                    setShowNotificationSettings(false);
+                  }}
+                >
+                  <Text style={styles.saveBtnText}>Cancel Notification</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
       <Modal
         visible={isConfirmModalVisible}
         transparent={true}
         animationType="fade"
+        onRequestClose={() => setIsConfirmModalVisible(false)}
       >
         <View style={styles.confirmModalOverlay}>
           <View style={styles.confirmModalContainer}>
@@ -1198,7 +1804,7 @@ export default function PlannerScreen() {
       </Modal>
 
       {/* small transient message modal */}
-      <Modal visible={showModal} transparent animationType="fade">
+      <Modal visible={showModal} transparent animationType="fade" onRequestClose={() => setShowModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.messageBox}>
             <Text style={{ color: COLORS.textPrimary }}>{modalMessage}</Text>
@@ -1209,16 +1815,17 @@ export default function PlannerScreen() {
   );
 }
 
-/* Styles */
+/* Styles - UPDATED */
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: COLORS.backgroundBase },
   header: {
-    paddingTop: 18,
+    paddingTop: Platform.OS === 'ios' ? 50 : 18,
     paddingHorizontal: 20,
     paddingBottom: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    backgroundColor: COLORS.backgroundBase,
   },
   headerTitle: { fontSize: 24, fontWeight: "900", color: COLORS.textPrimary },
   headerAdd: {
@@ -1237,6 +1844,16 @@ const styles = StyleSheet.create({
     borderColor: COLORS.accentBlush + "22",
   },
   headerAddText: { color: COLORS.accentBlush, fontWeight: "700", marginLeft: 8 },
+  headerIconBtn: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.card,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 3,
+  },
 
   searchRow: {
     marginHorizontal: 20,
@@ -1350,7 +1967,15 @@ const styles = StyleSheet.create({
   priorityText: { color: "#fff", fontSize: 11, fontWeight: "700" },
   metaText: { color: "#777", fontSize: 12 },
 
-  cardActions: { marginLeft: 10, justifyContent: "space-between", height: 60, paddingTop: 5, paddingBottom: 5 },
+  cardActions: { 
+    marginLeft: 10, 
+    justifyContent: "space-between", 
+    height: 60, 
+    paddingTop: 5, 
+    paddingBottom: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   iconBtn: { padding: 6 },
 
   expandedContent: {
@@ -1393,6 +2018,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.38)", justifyContent: "center", alignItems: "center" },
   modalCard: {
     width: "92%",
+    maxHeight: "90%",
     backgroundColor: COLORS.layer,
     borderRadius: 14,
     padding: 16,
@@ -1495,7 +2121,7 @@ const styles = StyleSheet.create({
   dayTextSelected: { color: "#fff" },
   taskDot: { position: "absolute", bottom: 5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: COLORS.sage },
 
-  // Confirmation Modal Styles (NEW)
+  // Confirmation Modal Styles
   confirmModalOverlay: {
     flex: 1,
     justifyContent: 'center',
@@ -1563,5 +2189,224 @@ const styles = StyleSheet.create({
     color: COLORS.card,
     fontWeight: '700',
     fontSize: 16,
-  }
+  },
+
+  // Notification Styles
+  notificationSection: {
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.sage + "22",
+  },
+  notificationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  notificationTimeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 12,
+  },
+  notificationTimeBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.backgroundBase,
+    marginRight: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#eee',
+  },
+  notificationTimeBtnActive: {
+    backgroundColor: COLORS.sage,
+    borderColor: COLORS.sage,
+  },
+  notificationTimeText: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  notificationTimeTextActive: {
+    color: '#fff',
+  },
+  notificationHint: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  customTimePicker: {
+    marginTop: 12,
+    marginBottom: 16,
+  },
+  notificationItemPreview: {
+    backgroundColor: COLORS.backgroundBase,
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  notificationItemTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 4,
+  },
+  notificationItemDate: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  notificationSettingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingVertical: 8,
+  },
+  settingLabel: {
+    fontSize: 16,
+    color: COLORS.textPrimary,
+    fontWeight: '600',
+  },
+
+  // NEW: Notification List Modal Styles
+  notificationModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  notificationModalContainer: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  notificationModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  notificationModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  notificationModalContent: {
+    flex: 1,
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+  },
+  loadingText: {
+    marginTop: 12,
+    color: COLORS.textSecondary,
+    fontSize: 14,
+  },
+  emptyNotificationsContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+  },
+  emptyNotificationsText: {
+    marginTop: 12,
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  emptyNotificationsSubtext: {
+    marginTop: 6,
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  notificationHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  notificationCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  clearAllButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: COLORS.danger + '15',
+    borderRadius: 8,
+  },
+  clearAllText: {
+    color: COLORS.danger,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  notificationList: {
+    flex: 1,
+  },
+  notificationItem: {
+    backgroundColor: COLORS.backgroundBase,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#eee',
+  },
+  notificationItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  notificationItemTitle: {
+    flex: 1,
+    marginLeft: 10,
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  cancelNotificationButton: {
+    padding: 4,
+  },
+  notificationItemBody: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    marginBottom: 8,
+    lineHeight: 18,
+  },
+  notificationItemFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  notificationItemTime: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.info,
+  },
+  notificationItemDate: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+  },
+  notificationModalCloseButton: {
+    marginTop: 20,
+    paddingVertical: 14,
+    backgroundColor: COLORS.accentBlush,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  notificationModalCloseText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
 });

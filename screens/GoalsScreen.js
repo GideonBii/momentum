@@ -1,9 +1,12 @@
-// screens/GoalsScreen.js - ENHANCED VERSION (With Milestone Dates & Notifications)
+// screens/GoalsScreen.js - COMPLETE ENHANCED VERSION
+// Add these new imports at the top (if not already present)
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useNavigation } from "@react-navigation/native";
 import * as Notifications from 'expo-notifications';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import {
   addDoc,
   arrayRemove,
@@ -49,7 +52,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// Theme
+// Theme - Enhanced with new colors
 const COLORS = {
   backgroundBase: "#FAFAFA",
   layer: "#FAFAFA",
@@ -66,6 +69,10 @@ const COLORS = {
   collaborator: "#D8A39D",
   success: "#4CAF50",
   warning: "#FF9800",
+  archived: "#95A5A6",
+  template: "#9B59B6",
+  recurring: "#1ABC9C",
+  chartGrid: "#F0F0F0",
   priority: {
     high: "#E74C3C",
     medium: "#F39C12",
@@ -88,21 +95,32 @@ const CATEGORY_OPTIONS = [
   { value: "other", label: "Other", icon: "ellipsis-horizontal" },
 ];
 
+const RECURRENCE_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+];
+
 const getSharedGoalsCollectionPath = (appId) =>
   `artifacts/${appId || "default-app-id"}/public/data/sharedGoals`;
 
-// Helper to convert Firestore doc to a full goal object
+// Enhanced docToGoal function with new fields
 const docToGoal = (d, isOwner = true, sharedDocId = null, ownerId = null) => {
-  const data = d.data ? d.data() : d; // Handle both Firestore snapshot and raw object
+  const data = d.data ? d.data() : d;
   const id = d.id;
   const milestones = data.milestones || [];
   const completed = milestones.filter((m) => m.completed).length;
   const progress = milestones.length ? Math.round((completed / milestones.length) * 100) : 0;
   
-  // Calculate days remaining
   const dueDate = data.dueDate?.toDate ? data.dueDate.toDate() : (data.dueDate ? new Date(data.dueDate) : new Date());
   const today = new Date();
   const daysRemaining = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+  
+  // Calculate time spent
+  const totalTimeSpent = data.timeEntries ? 
+    data.timeEntries.reduce((sum, entry) => sum + (entry.duration || 0), 0) : 0;
   
   return {
     id: id,
@@ -118,6 +136,13 @@ const docToGoal = (d, isOwner = true, sharedDocId = null, ownerId = null) => {
     priority: data.priority || "medium",
     category: data.category || "personal",
     tags: data.tags || [],
+    archived: data.archived || false,
+    isTemplate: data.isTemplate || false,
+    recurrence: data.recurrence || { type: 'none', interval: 1 },
+    timeEntries: data.timeEntries || [],
+    totalTimeSpent,
+    estimatedTime: data.estimatedTime || 0,
+    createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || new Date()),
   };
 };
 
@@ -146,7 +171,7 @@ export default function GoalsScreen() {
   // --- Filtering & Sorting ---
   const [filterCategory, setFilterCategory] = useState("all");
   const [filterPriority, setFilterPriority] = useState("all");
-  const [sortBy, setSortBy] = useState("dueDate"); // dueDate, priority, progress, title
+  const [sortBy, setSortBy] = useState("dueDate");
   const [showCompleted, setShowCompleted] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -161,7 +186,7 @@ export default function GoalsScreen() {
   const [newMilestoneDueDate, setNewMilestoneDueDate] = useState(new Date());
   const [showMilestoneDatePicker, setShowMilestoneDatePicker] = useState(false);
   const [expandedGoalId, setExpandedGoalId] = useState(null);
-  const [goalMilestones, setGoalMilestones] = useState([]); // For creating/editing goal form
+  const [goalMilestones, setGoalMilestones] = useState([]);
 
   // --- Share Modal State ---
   const [shareModalVisible, setShareModalVisible] = useState(false);
@@ -174,12 +199,31 @@ export default function GoalsScreen() {
   const [notifications, setNotifications] = useState([]);
   const notificationsUnsub = useRef(null);
 
+  // --- NEW ENHANCEMENT STATES ---
+  const [archivedGoals, setArchivedGoals] = useState([]);
+  const [goalTemplates, setGoalTemplates] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrenceType, setRecurrenceType] = useState('none');
+  const [recurrenceInterval, setRecurrenceInterval] = useState(1);
+  const [timeTracking, setTimeTracking] = useState({});
+  const [activeTimer, setActiveTimer] = useState(null);
+  const [analyticsView, setAnalyticsView] = useState('list');
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [estimatedHours, setEstimatedHours] = useState("");
+
   // --- Statistics ---
   const [stats, setStats] = useState({
     total: 0,
     completed: 0,
     inProgress: 0,
     overdue: 0,
+    archived: 0,
+    avgProgress: 0,
+    totalTimeSpent: 0,
+    categoryStats: {},
   });
 
   const showMessage = (message) => {
@@ -222,7 +266,6 @@ export default function GoalsScreen() {
         const cached = await AsyncStorage.getItem(`goals_cache_${user?.uid}`);
         if (cached) {
           const parsed = JSON.parse(cached);
-          // Re-hydrate dates
           const hydrated = parsed.map(g => ({
             ...g,
             dueDate: new Date(g.dueDate),
@@ -247,8 +290,36 @@ export default function GoalsScreen() {
     const completed = goals.filter(g => g.progress === 100).length;
     const inProgress = goals.filter(g => g.progress > 0 && g.progress < 100).length;
     const overdue = goals.filter(g => g.daysRemaining < 0 && g.progress < 100).length;
+    const archivedCount = goals.filter(g => g.archived).length;
     
-    setStats({ total, completed, inProgress, overdue });
+    // Calculate average progress
+    const avgProgress = goals.length > 0 
+      ? Math.round(goals.reduce((sum, g) => sum + g.progress, 0) / goals.length)
+      : 0;
+    
+    // Calculate total time spent
+    const totalTimeSpent = goals.reduce((sum, g) => sum + (g.totalTimeSpent || 0), 0);
+    
+    // Calculate completion rate by category
+    const categoryStats = {};
+    goals.forEach(g => {
+      if (!categoryStats[g.category]) {
+        categoryStats[g.category] = { total: 0, completed: 0 };
+      }
+      categoryStats[g.category].total++;
+      if (g.progress === 100) categoryStats[g.category].completed++;
+    });
+
+    setStats({ 
+      total, 
+      completed, 
+      inProgress, 
+      overdue,
+      archived: archivedCount,
+      avgProgress,
+      totalTimeSpent: Math.floor(totalTimeSpent / 3600),
+      categoryStats
+    });
 
     // Check for upcoming milestones and schedule notifications
     scheduleMilestoneNotifications(goals);
@@ -257,16 +328,14 @@ export default function GoalsScreen() {
 
   // --- NOTIFICATION SCHEDULER ---
   const scheduleMilestoneNotifications = async (currentGoals) => {
-    // Cancel all existing to avoid duplicates (simple strategy)
     await Notifications.cancelAllScheduledNotificationsAsync();
 
     const today = new Date();
     
     for (const goal of currentGoals) {
-      // Schedule goal notifications
       if (goal.daysRemaining > 0 && goal.daysRemaining <= 3) {
         const triggerDate = new Date(goal.dueDate);
-        triggerDate.setHours(9, 0, 0, 0); // 9 AM on due date
+        triggerDate.setHours(9, 0, 0, 0);
         
         if (triggerDate > today) {
           await Notifications.scheduleNotificationAsync({
@@ -280,7 +349,6 @@ export default function GoalsScreen() {
         }
       }
 
-      // Schedule milestone notifications
       const incompleteMilestones = goal.milestones.filter(m => !m.completed && m.dueDate);
       for (const milestone of incompleteMilestones) {
         const milestoneDueDate = milestone.dueDate?.toDate ? milestone.dueDate.toDate() : new Date(milestone.dueDate);
@@ -288,7 +356,7 @@ export default function GoalsScreen() {
         
         if (daysUntilMilestone > 0 && daysUntilMilestone <= 3) {
           const triggerDate = new Date(milestoneDueDate);
-          triggerDate.setHours(9, 0, 0, 0); // 9 AM on due date
+          triggerDate.setHours(9, 0, 0, 0);
           
           if (triggerDate > today) {
             await Notifications.scheduleNotificationAsync({
@@ -407,6 +475,13 @@ export default function GoalsScreen() {
   const getFilteredAndSortedGoals = () => {
     let filtered = [...goals];
 
+    // Filter archived goals
+    if (!showArchived) {
+      filtered = filtered.filter(g => !g.archived);
+    } else {
+      filtered = filtered.filter(g => g.archived);
+    }
+
     // Filter by search query
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
@@ -479,6 +554,10 @@ export default function GoalsScreen() {
     setSelectedCategory(goal?.category || "personal");
     setTags(goal?.tags || []);
     setGoalMilestones(goal?.milestones || []);
+    setIsRecurring(goal?.recurrence?.type !== 'none' || false);
+    setRecurrenceType(goal?.recurrence?.type || 'none');
+    setRecurrenceInterval(goal?.recurrence?.interval || 1);
+    setEstimatedHours(goal?.estimatedTime ? Math.floor(goal.estimatedTime / 3600).toString() : "");
     setIsFormModalVisible(true);
   };
 
@@ -708,6 +787,214 @@ export default function GoalsScreen() {
     }
   };
 
+  // --- NEW ENHANCEMENT FUNCTIONS ---
+
+  // 1. Archive Goal Function
+  const handleArchiveGoal = async (goal) => {
+    if (!goal.isOwner) {
+      showMessage("Only owner can archive");
+      return;
+    }
+
+    Alert.alert(
+      "Archive Goal",
+      `Archive "${goal.title}"? You can restore it later from settings.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Archive",
+          style: "default",
+          onPress: async () => {
+            try {
+              await updateDoc(doc(db, "goals", goal.id), {
+                archived: true,
+                archivedAt: new Date(),
+              });
+              showMessage("Goal archived");
+              
+              // Notify collaborators
+              const uids = await getSharedCollaborators(goal.id);
+              if (uids.length) {
+                for (const uid of uids) {
+                  try {
+                    await sendNotification(
+                      [uid],
+                      `${user.displayName || user.email} archived "${goal.title}"`,
+                      { goalId: goal.id, type: "goal_archived" }
+                    );
+                  } catch (e) {
+                    console.error("Notification error:", e);
+                  }
+                }
+              }
+            } catch (err) {
+              console.error(err);
+              showMessage("Archive failed");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // 2. Restore Goal Function
+  const handleRestoreGoal = async (goal) => {
+    try {
+      await updateDoc(doc(db, "goals", goal.id), {
+        archived: false,
+        restoredAt: new Date(),
+      });
+      showMessage("Goal restored");
+    } catch (err) {
+      console.error(err);
+      showMessage("Restore failed");
+    }
+  };
+
+  // 3. Save as Template Function
+  const handleSaveAsTemplate = async (goal) => {
+    if (!goal.isOwner) {
+      showMessage("Only owner can save as template");
+      return;
+    }
+
+    try {
+      const templateData = {
+        title: goal.title,
+        description: goal.description,
+        category: goal.category,
+        priority: goal.priority,
+        tags: goal.tags || [],
+        milestones: goal.milestones.map(m => ({ 
+          ...m, 
+          completed: false,
+          dueDate: null 
+        })),
+        estimatedTime: goal.estimatedTime || 0,
+        isTemplate: true,
+        userId: user.uid,
+        createdAt: new Date(),
+        templateName: `${goal.title} Template`,
+      };
+
+      await addDoc(collection(db, "goalTemplates"), templateData);
+      showMessage("Template saved successfully");
+    } catch (err) {
+      console.error(err);
+      showMessage("Failed to save template");
+    }
+  };
+
+  // 4. Time Tracking Functions
+  const handleStartTimer = (goalId) => {
+    if (activeTimer && activeTimer.goalId !== goalId) {
+      handleStopTimer(activeTimer.goalId);
+    }
+
+    const timerId = Date.now();
+    setActiveTimer({
+      goalId,
+      startTime: Date.now(),
+      timerId
+    });
+
+    showMessage(`Started timer for goal`);
+  };
+
+  const handleStopTimer = async (goalId) => {
+    if (!activeTimer || activeTimer.goalId !== goalId) return;
+
+    const duration = Math.floor((Date.now() - activeTimer.startTime) / 1000);
+    const goal = goals.find(g => g.id === goalId);
+    
+    if (goal) {
+      try {
+        const newTimeEntry = {
+          startTime: new Date(activeTimer.startTime),
+          endTime: new Date(),
+          duration,
+          notes: ""
+        };
+
+        const updatedTimeEntries = [...(goal.timeEntries || []), newTimeEntry];
+        
+        await updateDoc(doc(db, "goals", goalId), {
+          timeEntries: updatedTimeEntries,
+          totalTimeSpent: (goal.totalTimeSpent || 0) + duration
+        });
+
+        showMessage(`Tracked ${Math.floor(duration / 60)} minutes`);
+      } catch (err) {
+        console.error("Error saving time entry:", err);
+        showMessage("Failed to save time");
+      }
+    }
+
+    setActiveTimer(null);
+  };
+
+  // 5. Export Goals Function
+  const handleExportGoals = async () => {
+    try {
+      const dataToExport = goals.map(goal => ({
+        title: goal.title,
+        description: goal.description,
+        dueDate: goal.dueDate.toISOString(),
+        priority: goal.priority,
+        category: goal.category,
+        progress: goal.progress,
+        milestones: goal.milestones.map(m => ({
+          title: m.title,
+          completed: m.completed,
+          dueDate: m.dueDate ? new Date(m.dueDate).toISOString() : null
+        })),
+        tags: goal.tags,
+        timeSpent: goal.totalTimeSpent,
+        createdAt: goal.createdAt.toISOString()
+      }));
+
+      const jsonString = JSON.stringify(dataToExport, null, 2);
+      const fileUri = FileSystem.documentDirectory + `goals_export_${Date.now()}.json`;
+      
+      await FileSystem.writeAsStringAsync(fileUri, jsonString);
+      
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'application/json',
+        dialogTitle: 'Export Goals',
+        UTI: 'public.json'
+      });
+      
+      showMessage("Goals exported successfully");
+    } catch (err) {
+      console.error("Export error:", err);
+      showMessage("Export failed");
+    }
+  };
+
+  // Helper function to calculate next due date
+  const calculateNextDueDate = (currentDate, recurrence) => {
+    const date = new Date(currentDate);
+    
+    switch (recurrence.type) {
+      case 'daily':
+        date.setDate(date.getDate() + recurrence.interval);
+        break;
+      case 'weekly':
+        date.setDate(date.getDate() + (recurrence.interval * 7));
+        break;
+      case 'monthly':
+        date.setMonth(date.getMonth() + recurrence.interval);
+        break;
+      case 'yearly':
+        date.setFullYear(date.getFullYear() + recurrence.interval);
+        break;
+      default:
+        return null;
+    }
+    
+    return date;
+  };
+
   // --- SAVE GOAL (CREATE/EDIT) ---
   const handleSaveGoal = async () => {
     if (!goalTitle.trim()) {
@@ -729,6 +1016,12 @@ export default function GoalsScreen() {
         category: selectedCategory,
         tags: tags,
         updatedAt: new Date(),
+        archived: false,
+        recurrence: isRecurring ? {
+          type: recurrenceType,
+          interval: recurrenceInterval
+        } : { type: 'none', interval: 1 },
+        estimatedTime: estimatedHours ? parseInt(estimatedHours) * 3600 : 0,
       };
 
       let savedGoalId;
@@ -758,15 +1051,35 @@ export default function GoalsScreen() {
       } else {
         const docRef = await addDoc(collection(db, "goals"), goalData);
         savedGoalId = docRef.id;
+
+        // If recurring, create next instance
+        if (isRecurring && recurrenceType !== 'none') {
+          const nextDueDate = calculateNextDueDate(selectedDate, goalData.recurrence);
+          if (nextDueDate) {
+            const nextGoalData = {
+              ...goalData,
+              dueDate: nextDueDate,
+              parentGoalId: savedGoalId,
+              recurrence: goalData.recurrence,
+              createdAt: new Date()
+            };
+            
+            await addDoc(collection(db, "goals"), nextGoalData);
+          }
+        }
       }
 
-      // Schedule notifications for new/updated milestones
+      // Schedule notifications
       await scheduleMilestoneNotifications([{...goalData, id: savedGoalId}]);
 
       showMessage(isEditing ? "Goal updated" : "Goal created");
       setIsFormModalVisible(false);
       setTags([]);
       setGoalMilestones([]);
+      setIsRecurring(false);
+      setRecurrenceType('none');
+      setRecurrenceInterval(1);
+      setEstimatedHours("");
     } catch (err) {
       console.error(err);
       showMessage("Save failed");
@@ -838,13 +1151,15 @@ export default function GoalsScreen() {
       const newGoal = {
         title: `${goal.title} (Copy)`,
         description: goal.description,
-        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         userId: user.uid,
         createdAt: new Date(),
         milestones: goal.milestones.map(m => ({ ...m, completed: false })),
         priority: goal.priority,
         category: goal.category,
         tags: goal.tags || [],
+        recurrence: goal.recurrence,
+        estimatedTime: goal.estimatedTime || 0,
       };
 
       await addDoc(collection(db, "goals"), newGoal);
@@ -883,10 +1198,9 @@ export default function GoalsScreen() {
         milestones: arrayUnion(newMilestone),
       });
 
-      // Schedule notification for the new milestone
       if (dueDate) {
         const triggerDate = new Date(dueDate);
-        triggerDate.setHours(9, 0, 0, 0); // 9 AM on due date
+        triggerDate.setHours(9, 0, 0, 0);
         
         if (triggerDate > new Date()) {
           await Notifications.scheduleNotificationAsync({
@@ -1057,257 +1371,507 @@ export default function GoalsScreen() {
     );
   };
 
-  const filteredGoals = getFilteredAndSortedGoals();
-
-  return (
-    <View style={styles.container}>
-      {/* Header with Statistics */}
-      <View style={styles.header}>
-        <View>
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <Text style={styles.headerTitle}>My Goals</Text>
-            {notifications.filter((n) => !n.read).length > 0 && (
-              <View style={styles.notifBadge}>
-                <Text style={styles.notifBadgeText}>
-                  {notifications.filter((n) => !n.read).length}
-                </Text>
-              </View>
-            )}
-          </View>
-          <View style={styles.statsContainer}>
-            <View style={styles.statItem}>
-              <Text style={styles.statNumber}>{stats.total}</Text>
-              <Text style={styles.statLabel}>Total</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={[styles.statNumber, { color: COLORS.success }]}>{stats.completed}</Text>
-              <Text style={styles.statLabel}>Done</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={[styles.statNumber, { color: COLORS.accent }]}>{stats.inProgress}</Text>
-              <Text style={styles.statLabel}>Active</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={[styles.statNumber, { color: COLORS.error }]}>{stats.overdue}</Text>
-              <Text style={styles.statLabel}>Overdue</Text>
-            </View>
+  // --- HEADER COMPONENT ---
+  const Header = () => (
+    <View style={styles.header}>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <Text style={styles.headerTitle}>My Goals</Text>
+          <View style={styles.viewToggleContainer}>
+            <TouchableOpacity 
+              style={[styles.viewToggleButton, analyticsView === 'list' && styles.viewToggleActive]}
+              onPress={() => setAnalyticsView('list')}
+            >
+              <Ionicons name="list" size={20} color={analyticsView === 'list' ? '#fff' : COLORS.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.viewToggleButton, analyticsView === 'charts' && styles.viewToggleActive]}
+              onPress={() => setAnalyticsView('charts')}
+            >
+              <Ionicons name="stats-chart" size={20} color={analyticsView === 'charts' ? '#fff' : COLORS.textSecondary} />
+            </TouchableOpacity>
           </View>
         </View>
+        
+        <View style={styles.statsContainer}>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{stats.total}</Text>
+            <Text style={styles.statLabel}>Total</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statNumber, { color: COLORS.success }]}>{stats.completed}</Text>
+            <Text style={styles.statLabel}>Done</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statNumber, { color: COLORS.accent }]}>{stats.inProgress}</Text>
+            <Text style={styles.statLabel}>Active</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statNumber, { color: COLORS.error }]}>{stats.overdue}</Text>
+            <Text style={styles.statLabel}>Overdue</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statNumber, { color: COLORS.archived }]}>{stats.archived}</Text>
+            <Text style={styles.statLabel}>Archived</Text>
+          </View>
+        </View>
+      </View>
+      
+      <View style={styles.headerActions}>
+        <TouchableOpacity style={styles.actionButtonSmall} onPress={() => setShowExportModal(true)}>
+          <Ionicons name="download-outline" size={20} color={COLORS.textPrimary} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.actionButtonSmall} onPress={() => setShowTemplatesModal(true)}>
+          <Ionicons name="copy-outline" size={20} color={COLORS.textPrimary} />
+        </TouchableOpacity>
         <TouchableOpacity style={styles.addButton} onPress={() => openGoalModal()}>
           <Ionicons name="add" size={24} color={COLORS.textPrimary} />
         </TouchableOpacity>
       </View>
+    </View>
+  );
 
-      {/* Search and Filters */}
-      <View style={styles.searchContainer}>
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={20} color={COLORS.textSecondary} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search goals..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholderTextColor={COLORS.completedText}
-          />
-        </View>
-        <TouchableOpacity style={styles.filterButton} onPress={() => setShowFiltersModal(true)}>
-          <Ionicons name="options" size={20} color={COLORS.textPrimary} />
-        </TouchableOpacity>
-      </View>
+  // --- GOAL ITEM COMPONENT ---
+  const GoalItem = ({ goal }) => {
+    const isEditable = goal.isOwner;
+    const isExpanded = expandedGoalId === goal.id;
+    const isOverdue = goal.daysRemaining < 0 && goal.progress < 100;
+    const isTimerActive = activeTimer && activeTimer.goalId === goal.id;
 
-      {/* Goals List - SCROLL FIX: Added flex: 1 via styles.goalsList */}
-      <ScrollView 
-        contentContainerStyle={styles.scrollContent} 
-        style={styles.goalsList}
-        showsVerticalScrollIndicator={false}
-      >
-        {filteredGoals.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="flag-outline" size={64} color={COLORS.completedText} />
-            <Text style={styles.emptyListText}>
-              {searchQuery || filterCategory !== "all" || filterPriority !== "all" 
-                ? "No goals match your filters" 
-                : "No goals yet. Tap + to create one."}
-            </Text>
-          </View>
-        ) : (
-          filteredGoals.map((goal) => {
-            const isEditable = goal.isOwner;
-            const isExpanded = expandedGoalId === goal.id;
-            const isOverdue = goal.daysRemaining < 0 && goal.progress < 100;
-
-            return (
-              <View key={goal.id} style={[styles.goalItem, isOverdue && styles.goalItemOverdue]}>
-                <TouchableOpacity 
-                  onPress={() => setExpandedGoalId(isExpanded ? null : goal.id)}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.goalHeader}>
-                    <View style={styles.goalDetails}>
-                      <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
-                        <Text style={styles.goalTitle}>{goal.title}</Text>
-                        <PriorityBadge priority={goal.priority} />
-                      </View>
-                      <Text style={styles.goalDescription} numberOfLines={2}>{goal.description}</Text>
-                      
-                      <View style={styles.metaRow}>
-                        <View style={styles.categoryBadge}>
-                          <Ionicons 
-                            name={CATEGORY_OPTIONS.find(c => c.value === goal.category)?.icon || "ellipsis-horizontal"} 
-                            size={12} 
-                            color={COLORS.textSecondary} 
-                          />
-                          <Text style={styles.categoryText}>
-                            {CATEGORY_OPTIONS.find(c => c.value === goal.category)?.label || "Other"}
-                          </Text>
-                        </View>
-                        
-                        <Text style={[styles.daysRemaining, isOverdue && styles.overdueText]}>
-                          {isOverdue 
-                            ? `${Math.abs(goal.daysRemaining)} days overdue` 
-                            : `${goal.daysRemaining} days left`}
-                        </Text>
-                      </View>
-
-                      {goal.tags && goal.tags.length > 0 && (
-                        <View style={styles.tagsContainer}>
-                          {goal.tags.map((tag, idx) => (
-                            <View key={idx} style={styles.tag}>
-                              <Text style={styles.tagText}>#{tag}</Text>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-
-                      <Text style={styles.goalMeta}>
-                        Due: {new Date(goal.dueDate).toLocaleDateString()}
-                        {goal.isOwner && <Text style={styles.ownerBadge}> • Owned</Text>}
-                        {goal.isCollaborator && <Text style={styles.collaboratorBadge}> • Collaborating</Text>}
-                      </Text>
-                    </View>
-                    <ProgressCircle progress={goal.progress} />
-                  </View>
-                </TouchableOpacity>
-
-                {/* Milestones - Expanded View */}
-                {isExpanded && (
-                  <View style={styles.milestonesContainer}>
-                    <View style={styles.milestoneHeader}>
-                      <Text style={styles.milestonesTitle}>Milestones</Text>
-                      <Text style={styles.milestoneCount}>
-                        {goal.milestones.filter(m => m.completed).length}/{goal.milestones.length}
-                      </Text>
-                    </View>
-                    
-                    {goal.milestones.length === 0 ? (
-                      <Text style={styles.emptyMilestonesText}>No milestones yet.</Text>
-                    ) : (
-                      goal.milestones.map((m, idx) => (
-                        <View key={idx} style={styles.milestoneRow}>
-                          <TouchableOpacity
-                            style={styles.milestoneItem}
-                            onPress={isEditable ? () => handleToggleMilestone(goal.id, idx) : null}
-                            activeOpacity={isEditable ? 0.7 : 1}
-                          >
-                            <Ionicons
-                              name={m.completed ? "checkmark-circle" : "ellipse-outline"}
-                              size={20}
-                              color={m.completed ? COLORS.success : isEditable ? COLORS.textSecondary : COLORS.completedText}
-                            />
-                            <View style={styles.milestoneContent}>
-                              <Text style={[styles.milestoneText, m.completed && styles.completedMilestoneText]}>
-                                {m.title}
-                              </Text>
-                              <MilestoneDueDateBadge milestone={m} />
-                            </View>
-                          </TouchableOpacity>
-                          {isEditable && (
-                            <TouchableOpacity
-                              style={styles.deleteMilestoneButton}
-                              onPress={() => handleDeleteMilestone(goal.id, m)}
-                            >
-                              <Ionicons name="trash-outline" size={18} color={COLORS.completedText} />
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      ))
-                    )}
-
-                    {isEditable && (
-                      <View style={styles.milestoneInputContainer}>
-                        <View style={{ flex: 1 }}>
-                          <TextInput
-                            style={[styles.input, { marginRight: 10, marginBottom: 8 }]}
-                            placeholder="Add a new milestone"
-                            placeholderTextColor={COLORS.completedText}
-                            value={newMilestoneTitle}
-                            onChangeText={setNewMilestoneTitle}
-                          />
-                          <TouchableOpacity 
-                            style={styles.datePickerButton} 
-                            onPress={() => setShowMilestoneDatePicker(true)}
-                          >
-                            <Ionicons name="calendar-outline" size={16} color={COLORS.accent} />
-                            <Text style={styles.datePickerText}>
-                              {newMilestoneDueDate.toLocaleDateString()}
-                            </Text>
-                          </TouchableOpacity>
-                          {showMilestoneDatePicker && (
-                            <DateTimePicker 
-                              value={newMilestoneDueDate} 
-                              mode="date" 
-                              onChange={handleMilestoneDateChange} 
-                            />
-                          )}
-                        </View>
-                        <TouchableOpacity
-                          style={styles.milestoneAddButton}
-                          onPress={() => {
-                            handleAddMilestone(goal.id, newMilestoneTitle, newMilestoneDueDate);
-                            setNewMilestoneTitle("");
-                            setNewMilestoneDueDate(new Date());
-                          }}
-                        >
-                          <Ionicons name="add" size={24} color="#fff" />
-                        </TouchableOpacity>
-                      </View>
-                    )}
+    return (
+      <View style={[
+        styles.goalItem, 
+        isOverdue && styles.goalItemOverdue,
+        goal.archived && styles.goalItemArchived,
+      ]}>
+        <TouchableOpacity 
+          onPress={() => setExpandedGoalId(isExpanded ? null : goal.id)}
+          activeOpacity={0.7}
+        >
+          <View style={styles.goalHeader}>
+            <View style={styles.goalDetails}>
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+                <Text style={styles.goalTitle}>{goal.title}</Text>
+                <PriorityBadge priority={goal.priority} />
+              </View>
+              <Text style={styles.goalDescription} numberOfLines={2}>{goal.description}</Text>
+              
+              <View style={styles.metaRow}>
+                <View style={styles.categoryBadge}>
+                  <Ionicons 
+                    name={CATEGORY_OPTIONS.find(c => c.value === goal.category)?.icon || "ellipsis-horizontal"} 
+                    size={12} 
+                    color={COLORS.textSecondary} 
+                  />
+                  <Text style={styles.categoryText}>
+                    {CATEGORY_OPTIONS.find(c => c.value === goal.category)?.label || "Other"}
+                  </Text>
+                </View>
+                
+                {goal.recurrence.type !== 'none' && (
+                  <View style={styles.recurrenceBadge}>
+                    <Ionicons name="repeat" size={12} color={COLORS.recurring} />
+                    <Text style={styles.recurrenceText}>
+                      {goal.recurrence.interval > 1 ? `${goal.recurrence.interval} ` : ''}
+                      {goal.recurrence.type}
+                    </Text>
                   </View>
                 )}
-
-                {/* Actions */}
-                <View style={styles.goalActions}>
-                  <TouchableOpacity
-                    onPress={() => openGoalModal(goal)}
-                    style={[styles.actionButton, !isEditable && styles.disabledAction]}
-                  >
-                    <Ionicons name="create-outline" size={22} color={isEditable ? COLORS.textSecondary : COLORS.completedText} />
-                  </TouchableOpacity>
-
-                  {isEditable && (
-                    <>
-                      <TouchableOpacity onPress={() => handleDuplicateGoal(goal)} style={styles.actionButton}>
-                        <Ionicons name="copy-outline" size={22} color={COLORS.textSecondary} />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity onPress={() => openShareModal(goal)} style={styles.actionButton}>
-                        <Ionicons name="share-social-outline" size={22} color={COLORS.textSecondary} />
-                      </TouchableOpacity>
-                    </>
-                  )}
-
-                  <TouchableOpacity
-                    onPress={() => handleDeleteGoal(goal)}
-                    style={[styles.actionButton, !isEditable && styles.disabledAction]}
-                  >
-                    <Ionicons name="trash-outline" size={22} color={isEditable ? COLORS.error : COLORS.completedText} />
-                  </TouchableOpacity>
-                </View>
+                
+                {goal.totalTimeSpent > 0 && (
+                  <View style={styles.timeTrackingBadge}>
+                    <Ionicons name="time-outline" size={12} color={COLORS.textSecondary} />
+                    <Text style={styles.timeTrackingText}>
+                      {Math.floor(goal.totalTimeSpent / 3600)}h {Math.floor((goal.totalTimeSpent % 3600) / 60)}m
+                    </Text>
+                  </View>
+                )}
               </View>
-            );
-          })
+
+              <Text style={[styles.daysRemaining, isOverdue && styles.overdueText]}>
+                {isOverdue 
+                  ? `${Math.abs(goal.daysRemaining)} days overdue` 
+                  : `${goal.daysRemaining} days left`}
+              </Text>
+
+              {goal.tags && goal.tags.length > 0 && (
+                <View style={styles.tagsContainer}>
+                  {goal.tags.map((tag, idx) => (
+                    <View key={idx} style={styles.tag}>
+                      <Text style={styles.tagText}>#{tag}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              <Text style={styles.goalMeta}>
+                Due: {new Date(goal.dueDate).toLocaleDateString()}
+                {goal.isOwner && <Text style={styles.ownerBadge}> • Owned</Text>}
+                {goal.isCollaborator && <Text style={styles.collaboratorBadge}> • Collaborating</Text>}
+              </Text>
+            </View>
+            
+            <View style={styles.timeTrackingControls}>
+              {isEditable && (
+                isTimerActive ? (
+                  <TouchableOpacity 
+                    style={[styles.timerButton, styles.timerButtonActive]}
+                    onPress={() => handleStopTimer(goal.id)}
+                  >
+                    <Ionicons name="stop-circle" size={24} color="#fff" />
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity 
+                    style={styles.timerButton}
+                    onPress={() => handleStartTimer(goal.id)}
+                  >
+                    <Ionicons name="play-circle" size={24} color={COLORS.accent} />
+                  </TouchableOpacity>
+                )
+              )}
+              <ProgressCircle progress={goal.progress} size={60} />
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        {/* Milestones - Expanded View */}
+        {isExpanded && (
+          <View style={styles.milestonesContainer}>
+            <View style={styles.milestoneHeader}>
+              <Text style={styles.milestonesTitle}>Milestones</Text>
+              <Text style={styles.milestoneCount}>
+                {goal.milestones.filter(m => m.completed).length}/{goal.milestones.length}
+              </Text>
+            </View>
+            
+            {goal.milestones.length === 0 ? (
+              <Text style={styles.emptyMilestonesText}>No milestones yet.</Text>
+            ) : (
+              goal.milestones.map((m, idx) => (
+                <View key={idx} style={styles.milestoneRow}>
+                  <TouchableOpacity
+                    style={styles.milestoneItem}
+                    onPress={isEditable ? () => handleToggleMilestone(goal.id, idx) : null}
+                    activeOpacity={isEditable ? 0.7 : 1}
+                  >
+                    <Ionicons
+                      name={m.completed ? "checkmark-circle" : "ellipse-outline"}
+                      size={20}
+                      color={m.completed ? COLORS.success : isEditable ? COLORS.textSecondary : COLORS.completedText}
+                    />
+                    <View style={styles.milestoneContent}>
+                      <Text style={[styles.milestoneText, m.completed && styles.completedMilestoneText]}>
+                        {m.title}
+                      </Text>
+                      <MilestoneDueDateBadge milestone={m} />
+                    </View>
+                  </TouchableOpacity>
+                  {isEditable && (
+                    <TouchableOpacity
+                      style={styles.deleteMilestoneButton}
+                      onPress={() => handleDeleteMilestone(goal.id, m)}
+                    >
+                      <Ionicons name="trash-outline" size={18} color={COLORS.completedText} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))
+            )}
+
+            {isEditable && (
+              <View style={styles.milestoneInputContainer}>
+                <View style={{ flex: 1 }}>
+                  <TextInput
+                    style={[styles.input, { marginRight: 10, marginBottom: 8 }]}
+                    placeholder="Add a new milestone"
+                    placeholderTextColor={COLORS.completedText}
+                    value={newMilestoneTitle}
+                    onChangeText={setNewMilestoneTitle}
+                  />
+                  <TouchableOpacity 
+                    style={styles.datePickerButton} 
+                    onPress={() => setShowMilestoneDatePicker(true)}
+                  >
+                    <Ionicons name="calendar-outline" size={16} color={COLORS.accent} />
+                    <Text style={styles.datePickerText}>
+                      {newMilestoneDueDate.toLocaleDateString()}
+                    </Text>
+                  </TouchableOpacity>
+                  {showMilestoneDatePicker && (
+                    <DateTimePicker 
+                      value={newMilestoneDueDate} 
+                      mode="date" 
+                      onChange={handleMilestoneDateChange} 
+                    />
+                  )}
+                </View>
+                <TouchableOpacity
+                  style={styles.milestoneAddButton}
+                  onPress={() => {
+                    handleAddMilestone(goal.id, newMilestoneTitle, newMilestoneDueDate);
+                    setNewMilestoneTitle("");
+                    setNewMilestoneDueDate(new Date());
+                  }}
+                >
+                  <Ionicons name="add" size={24} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
         )}
-      </ScrollView>
+
+        {/* Actions */}
+        <View style={styles.goalActions}>
+          {goal.archived ? (
+            <TouchableOpacity onPress={() => handleRestoreGoal(goal)} style={styles.actionButton}>
+              <Ionicons name="refresh-outline" size={22} color={COLORS.success} />
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity onPress={() => handleArchiveGoal(goal)} style={styles.actionButton}>
+                <Ionicons name="archive-outline" size={22} color={COLORS.archived} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => handleSaveAsTemplate(goal)} style={styles.actionButton}>
+                <Ionicons name="document-text-outline" size={22} color={COLORS.template} />
+              </TouchableOpacity>
+            </>
+          )}
+
+          <TouchableOpacity
+            onPress={() => openGoalModal(goal)}
+            style={[styles.actionButton, !isEditable && styles.disabledAction]}
+          >
+            <Ionicons name="create-outline" size={22} color={isEditable ? COLORS.textSecondary : COLORS.completedText} />
+          </TouchableOpacity>
+
+          {isEditable && (
+            <>
+              <TouchableOpacity onPress={() => handleDuplicateGoal(goal)} style={styles.actionButton}>
+                <Ionicons name="copy-outline" size={22} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => openShareModal(goal)} style={styles.actionButton}>
+                <Ionicons name="share-social-outline" size={22} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+            </>
+          )}
+
+          <TouchableOpacity
+            onPress={() => handleDeleteGoal(goal)}
+            style={[styles.actionButton, !isEditable && styles.disabledAction]}
+          >
+            <Ionicons name="trash-outline" size={22} color={isEditable ? COLORS.error : COLORS.completedText} />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  // --- TEMPLATES MODAL ---
+  const TemplatesModal = () => (
+    <Modal visible={showTemplatesModal} transparent animationType="fade">
+      <View style={styles.modalOverlay}>
+        <View style={styles.formModalContainer}>
+          <View style={styles.formModalHeader}>
+            <Text style={styles.formModalTitle}>Goal Templates</Text>
+            <TouchableOpacity onPress={() => setShowTemplatesModal(false)}>
+              <Ionicons name="close" size={24} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+          </View>
+          
+          <ScrollView>
+            <Text style={styles.label}>Create new goal from template</Text>
+            <View style={styles.filterOptions}>
+              <TouchableOpacity 
+                style={styles.filterOption}
+                onPress={() => {
+                  setIsFormModalVisible(true);
+                  setShowTemplatesModal(false);
+                }}
+              >
+                <Ionicons name="add-circle" size={20} color={COLORS.accent} />
+                <Text style={styles.filterOptionText}>Create New Goal</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={[styles.label, { marginTop: 20 }]}>Quick Templates</Text>
+            <View style={styles.filterOptions}>
+              <TouchableOpacity 
+                style={styles.filterOption}
+                onPress={() => {
+                  setGoalTitle("Daily Exercise");
+                  setGoalDescription("Complete 30 minutes of exercise daily");
+                  setSelectedCategory("health");
+                  setSelectedPriority("medium");
+                  setShowTemplatesModal(false);
+                  setIsFormModalVisible(true);
+                }}
+              >
+                <Ionicons name="fitness" size={20} color={COLORS.accent} />
+                <Text style={styles.filterOptionText}>Daily Exercise Routine</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={styles.filterOption}
+                onPress={() => {
+                  setGoalTitle("Learn New Skill");
+                  setGoalDescription("Spend 1 hour daily learning a new skill");
+                  setSelectedCategory("learning");
+                  setSelectedPriority("high");
+                  setShowTemplatesModal(false);
+                  setIsFormModalVisible(true);
+                }}
+              >
+                <Ionicons name="school" size={20} color={COLORS.accent} />
+                <Text style={styles.filterOptionText}>Skill Learning</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={styles.filterOption}
+                onPress={() => {
+                  setGoalTitle("Monthly Budget");
+                  setGoalDescription("Track and manage monthly expenses");
+                  setSelectedCategory("finance");
+                  setSelectedPriority("medium");
+                  setShowTemplatesModal(false);
+                  setIsFormModalVisible(true);
+                }}
+              >
+                <Ionicons name="cash" size={20} color={COLORS.accent} />
+                <Text style={styles.filterOptionText}>Budget Planning</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+          
+          <TouchableOpacity 
+            style={[styles.saveButton, { backgroundColor: COLORS.accentBlush }]}
+            onPress={() => setShowTemplatesModal(false)}
+          >
+            <Text style={styles.saveButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  // --- FILTERED GOALS ---
+  const filteredGoals = getFilteredAndSortedGoals();
+
+  return (
+    <View style={styles.container}>
+      <Header />
+      
+      {analyticsView === 'charts' ? (
+        <ScrollView style={styles.goalsList}>
+          <View style={styles.chartContainer}>
+            <Text style={styles.chartTitle}>Progress Overview</Text>
+            <View style={styles.progressGrid}>
+              <View style={styles.progressStat}>
+                <Text style={styles.progressStatNumber}>{stats.avgProgress}%</Text>
+                <Text style={styles.progressStatLabel}>Avg Progress</Text>
+              </View>
+              <View style={styles.progressStat}>
+                <Text style={styles.progressStatNumber}>{stats.totalTimeSpent}h</Text>
+                <Text style={styles.progressStatLabel}>Total Time</Text>
+              </View>
+              <View style={styles.progressStat}>
+                <Text style={styles.progressStatNumber}>{stats.completed}/{stats.total}</Text>
+                <Text style={styles.progressStatLabel}>Completed</Text>
+              </View>
+            </View>
+          </View>
+          
+          <View style={styles.chartContainer}>
+            <Text style={styles.chartTitle}>Goals by Category</Text>
+            <View style={styles.categoryStats}>
+              {Object.entries(stats.categoryStats || {}).map(([category, data]) => (
+                <View key={category} style={styles.categoryStatItem}>
+                  <View style={styles.categoryStatHeader}>
+                    <Ionicons 
+                      name={CATEGORY_OPTIONS.find(c => c.value === category)?.icon || "ellipsis-horizontal"} 
+                      size={16} 
+                      color={COLORS.textSecondary} 
+                    />
+                    <Text style={styles.categoryStatName}>
+                      {CATEGORY_OPTIONS.find(c => c.value === category)?.label || category}
+                    </Text>
+                  </View>
+                  <View style={styles.categoryStatBar}>
+                    <View 
+                      style={[
+                        styles.categoryStatFill, 
+                        { 
+                          width: `${(data.completed / data.total) * 100}%`,
+                          backgroundColor: COLORS.accent 
+                        }
+                      ]} 
+                    />
+                  </View>
+                  <Text style={styles.categoryStatCount}>
+                    {data.completed}/{data.total} ({data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0}%)
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+          
+          <TouchableOpacity 
+            style={[styles.saveButton, { margin: 20 }]}
+            onPress={() => setAnalyticsView('list')}
+          >
+            <Text style={styles.saveButtonText}>Back to List View</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      ) : (
+        <>
+          {/* Search and Filters */}
+          <View style={styles.searchContainer}>
+            <View style={styles.searchBox}>
+              <Ionicons name="search" size={20} color={COLORS.textSecondary} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search goals..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholderTextColor={COLORS.completedText}
+              />
+            </View>
+            <TouchableOpacity 
+              style={[styles.filterButton, showArchived && styles.filterButtonActive]}
+              onPress={() => setShowArchived(!showArchived)}
+            >
+              <Ionicons name={showArchived ? "archive" : "archive-outline"} size={20} color={showArchived ? COLORS.accent : COLORS.textPrimary} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.filterButton} onPress={() => setShowFiltersModal(true)}>
+              <Ionicons name="options" size={20} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Goals List */}
+          <ScrollView 
+            contentContainerStyle={styles.scrollContent} 
+            style={styles.goalsList}
+            showsVerticalScrollIndicator={false}
+          >
+            {filteredGoals.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="flag-outline" size={64} color={COLORS.completedText} />
+                <Text style={styles.emptyListText}>
+                  {searchQuery || filterCategory !== "all" || filterPriority !== "all" 
+                    ? "No goals match your filters" 
+                    : showArchived 
+                      ? "No archived goals"
+                      : "No goals yet. Tap + to create one."}
+                </Text>
+              </View>
+            ) : (
+              filteredGoals.map((goal) => (
+                <GoalItem key={goal.id} goal={goal} />
+              ))
+            )}
+          </ScrollView>
+        </>
+      )}
 
       {/* Create/Edit Modal */}
       <Modal visible={isFormModalVisible} transparent animationType="fade">
@@ -1415,6 +1979,80 @@ export default function GoalsScreen() {
                   </View>
                 ))}
               </View>
+
+              {/* Recurrence Settings */}
+              <View style={styles.recurrenceContainer}>
+                <TouchableOpacity 
+                  style={styles.toggleOption}
+                  onPress={() => setIsRecurring(!isRecurring)}
+                >
+                  <Text style={styles.filterOptionText}>Recurring Goal</Text>
+                  <Ionicons 
+                    name={isRecurring ? "checkmark-circle" : "ellipse-outline"} 
+                    size={24} 
+                    color={isRecurring ? COLORS.recurring : COLORS.textSecondary} 
+                  />
+                </TouchableOpacity>
+                
+                {isRecurring && (
+                  <>
+                    <Text style={[styles.label, { marginTop: 12 }]}>Recurrence Pattern</Text>
+                    <View style={styles.recurrenceSelector}>
+                      {RECURRENCE_OPTIONS.map((option) => (
+                        <TouchableOpacity
+                          key={option.value}
+                          style={[
+                            styles.recurrenceOption,
+                            recurrenceType === option.value && styles.recurrenceOptionSelected
+                          ]}
+                          onPress={() => setRecurrenceType(option.value)}
+                        >
+                          <Text style={[
+                            styles.recurrenceOptionText,
+                            recurrenceType === option.value && styles.recurrenceOptionTextSelected
+                          ]}>
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    
+                    {recurrenceType !== 'none' && (
+                      <>
+                        <Text style={[styles.label, { marginTop: 12 }]}>Repeat Every</Text>
+                        <View style={styles.intervalContainer}>
+                          <TextInput
+                            style={[styles.input, { width: 80 }]}
+                            placeholder="1"
+                            value={recurrenceInterval.toString()}
+                            onChangeText={(text) => {
+                              const num = parseInt(text) || 1;
+                              setRecurrenceInterval(num > 0 ? num : 1);
+                            }}
+                            keyboardType="numeric"
+                          />
+                          <Text style={styles.intervalText}>
+                            {recurrenceType === 'daily' ? 'day(s)' : 
+                             recurrenceType === 'weekly' ? 'week(s)' : 
+                             recurrenceType === 'monthly' ? 'month(s)' : 
+                             'year(s)'}
+                          </Text>
+                        </View>
+                      </>
+                    )}
+                  </>
+                )}
+              </View>
+
+              {/* Time Estimation */}
+              <Text style={styles.label}>Estimated Time (hours)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., 10 (leave empty if not needed)"
+                value={estimatedHours}
+                onChangeText={setEstimatedHours}
+                keyboardType="numeric"
+              />
 
               <Text style={styles.label}>Due Date *</Text>
               <TouchableOpacity style={styles.datePickerButton} onPress={() => setShowDatePicker(true)}>
@@ -1603,6 +2241,7 @@ export default function GoalsScreen() {
                   setSortBy("dueDate");
                   setShowCompleted(true);
                   setSearchQuery("");
+                  setShowArchived(false);
                 }}
               >
                 <Text style={styles.saveButtonText}>Reset All Filters</Text>
@@ -1669,6 +2308,39 @@ export default function GoalsScreen() {
         </View>
       </Modal>
 
+      {/* Export Modal */}
+      <Modal visible={showExportModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.formModalContainer}>
+            <View style={styles.formModalHeader}>
+              <Text style={styles.formModalTitle}>Export Goals</Text>
+              <TouchableOpacity onPress={() => setShowExportModal(false)}>
+                <Ionicons name="close" size={24} color={COLORS.textPrimary} />
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.label}>Select Export Format</Text>
+            <View style={styles.filterOptions}>
+              <TouchableOpacity style={styles.filterOption} onPress={handleExportGoals}>
+                <Ionicons name="document-text-outline" size={20} color={COLORS.accent} />
+                <Text style={styles.filterOptionText}>JSON Format</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.filterOption} onPress={() => showMessage("CSV export coming soon!")}>
+                <Ionicons name="document-outline" size={20} color={COLORS.textSecondary} />
+                <Text style={styles.filterOptionText}>CSV Format (Coming Soon)</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <TouchableOpacity style={styles.saveButton} onPress={() => setShowExportModal(false)}>
+              <Text style={styles.saveButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Templates Modal */}
+      <TemplatesModal />
+
       {/* Toast Message */}
       <Modal visible={showModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
@@ -1700,10 +2372,38 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   headerTitle: { fontSize: 28, fontWeight: "800", color: COLORS.textPrimary, marginBottom: 8 },
-  statsContainer: { flexDirection: "row", gap: 16, marginTop: 4 },
-  statItem: { alignItems: "center" },
+  statsContainer: { flexDirection: "row", gap: 16, marginTop: 4, flexWrap: "wrap" },
+  statItem: { alignItems: "center", minWidth: 60 },
   statNumber: { fontSize: 20, fontWeight: "700", color: COLORS.textPrimary },
   statLabel: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
+  
+  // New header styles
+  viewToggleContainer: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.backgroundBase,
+    borderRadius: 12,
+    padding: 4,
+  },
+  viewToggleButton: {
+    padding: 8,
+    borderRadius: 8,
+    marginHorizontal: 2,
+  },
+  viewToggleActive: {
+    backgroundColor: COLORS.accent,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  actionButtonSmall: {
+    backgroundColor: COLORS.card,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.lightBorder,
+  },
   addButton: { 
     backgroundColor: COLORS.accentBlush, 
     borderRadius: 50, 
@@ -1714,6 +2414,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowRadius: 8,
   },
+  
+  // Search and filters
   searchContainer: { 
     flexDirection: "row", 
     paddingHorizontal: 20, 
@@ -1746,8 +2448,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.lightBorder,
   },
+  filterButtonActive: {
+    backgroundColor: COLORS.accent + '15',
+    borderColor: COLORS.accent,
+  },
+  
+  // Goals list
   goalsList: {
-    flex: 1, // Essential for ScrollView to scroll properly
+    flex: 1,
   },
   scrollContent: { padding: 20, paddingTop: 0, paddingBottom: 100 },
   emptyState: { 
@@ -1761,6 +2469,8 @@ const styles = StyleSheet.create({
     marginTop: 16, 
     fontSize: 16 
   },
+  
+  // Goal item
   goalItem: { 
     backgroundColor: COLORS.card, 
     borderRadius: 16, 
@@ -1777,6 +2487,10 @@ const styles = StyleSheet.create({
   goalItemOverdue: {
     borderColor: COLORS.error + '40',
     backgroundColor: COLORS.error + '05',
+  },
+  goalItemArchived: {
+    opacity: 0.7,
+    borderColor: COLORS.archived + '40',
   },
   goalHeader: { 
     flexDirection: "row", 
@@ -1802,7 +2516,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginTop: 8,
-    gap: 12,
+    gap: 8,
+    flexWrap: "wrap",
   },
   categoryBadge: {
     flexDirection: "row",
@@ -1826,6 +2541,37 @@ const styles = StyleSheet.create({
   overdueText: {
     color: COLORS.error,
   },
+  
+  // New badge styles
+  recurrenceBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.recurring + '15',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  recurrenceText: {
+    fontSize: 11,
+    color: COLORS.recurring,
+    fontWeight: "600",
+  },
+  timeTrackingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.accent + '15',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  timeTrackingText: {
+    fontSize: 11,
+    color: COLORS.accent,
+    fontWeight: "600",
+  },
+  
   goalMeta: { 
     fontSize: 12, 
     color: COLORS.completedText, 
@@ -1834,6 +2580,25 @@ const styles = StyleSheet.create({
   },
   ownerBadge: { fontWeight: "700", color: COLORS.owner },
   collaboratorBadge: { fontWeight: "700", color: COLORS.collaborator },
+  
+  // Time tracking controls
+  timeTrackingControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  timerButton: {
+    backgroundColor: COLORS.backgroundBase,
+    padding: 8,
+    borderRadius: 50,
+    borderWidth: 2,
+    borderColor: COLORS.accent,
+  },
+  timerButtonActive: {
+    backgroundColor: COLORS.error,
+    borderColor: COLORS.error,
+  },
+  
   priorityBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -1871,6 +2636,8 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontWeight: "600",
   },
+  
+  // Progress circle
   progressCircleContainer: { 
     position: "relative", 
     alignItems: "center", 
@@ -1881,6 +2648,8 @@ const styles = StyleSheet.create({
     fontWeight: "700", 
     color: COLORS.textPrimary 
   },
+  
+  // Milestones
   milestonesContainer: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: COLORS.lightBorder },
   milestoneHeader: { 
     flexDirection: "row", 
@@ -1946,6 +2715,8 @@ const styles = StyleSheet.create({
     padding: 8,
     marginLeft: 8,
   },
+  
+  // Goal actions
   goalActions: { 
     flexDirection: "row", 
     justifyContent: "flex-end", 
@@ -1961,6 +2732,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundBase,
   },
   disabledAction: { opacity: 0.4 },
+  
+  // Modals
   modalOverlay: { 
     flex: 1, 
     backgroundColor: "rgba(0,0,0,0.4)", 
@@ -2007,6 +2780,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundBase, 
     color: COLORS.textPrimary 
   },
+  
+  // Priority selector
   prioritySelector: { 
     flexDirection: "row", 
     gap: 8, 
@@ -2027,6 +2802,8 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: COLORS.textSecondary,
   },
+  
+  // Category selector
   categorySelector: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -2057,6 +2834,49 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontWeight: "700",
   },
+  
+  // Recurrence settings
+  recurrenceContainer: {
+    marginBottom: 12,
+  },
+  recurrenceSelector: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  recurrenceOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.lightBorder,
+    backgroundColor: COLORS.backgroundBase,
+  },
+  recurrenceOptionSelected: {
+    backgroundColor: COLORS.recurring + '15',
+    borderColor: COLORS.recurring,
+  },
+  recurrenceOptionText: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontWeight: "600",
+  },
+  recurrenceOptionTextSelected: {
+    color: COLORS.recurring,
+    fontWeight: "700",
+  },
+  intervalContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  intervalText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    fontWeight: "600",
+  },
+  
+  // Date picker
   datePickerButton: { 
     flexDirection: "row", 
     alignItems: "center", 
@@ -2073,6 +2893,8 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontWeight: "600",
   },
+  
+  // Save button
   saveButton: { 
     backgroundColor: COLORS.textPrimary, 
     borderRadius: 12, 
@@ -2085,6 +2907,8 @@ const styles = StyleSheet.create({
     fontWeight: "700", 
     fontSize: 16 
   },
+  
+  // Message modal
   messageModalContainer: { 
     backgroundColor: COLORS.card, 
     borderRadius: 16, 
@@ -2110,6 +2934,8 @@ const styles = StyleSheet.create({
     textAlign: "center", 
     marginTop: 4 
   },
+  
+  // Email pill
   emailPill: { 
     flexDirection: "row", 
     alignItems: "center", 
@@ -2125,6 +2951,8 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontSize: 13,
   },
+  
+  // Notification badge
   notifBadge: { 
     backgroundColor: COLORS.error, 
     borderRadius: 12, 
@@ -2139,6 +2967,8 @@ const styles = StyleSheet.create({
     fontSize: 11, 
     fontWeight: "700" 
   },
+  
+  // Filter options
   filterOptions: {
     gap: 8,
     marginBottom: 12,
@@ -2186,7 +3016,8 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 16,
   },
-  // New styles for milestone form
+  
+  // Milestone form
   milestonesList: {
     marginBottom: 16,
   },
@@ -2218,5 +3049,71 @@ const styles = StyleSheet.create({
   deleteMilestoneFormButton: {
     padding: 6,
     marginLeft: 8,
+  },
+  
+  // Analytics charts
+  chartContainer: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    marginHorizontal: 20,
+  },
+  chartTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 16,
+  },
+  progressGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  progressStat: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  progressStatNumber: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: COLORS.accent,
+    marginBottom: 4,
+  },
+  progressStatLabel: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  categoryStats: {
+    gap: 12,
+  },
+  categoryStatItem: {
+    marginBottom: 8,
+  },
+  categoryStatHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  categoryStatName: {
+    fontSize: 14,
+    color: COLORS.textPrimary,
+    fontWeight: '600',
+  },
+  categoryStatBar: {
+    height: 8,
+    backgroundColor: COLORS.lightBorder,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  categoryStatFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  categoryStatCount: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+    textAlign: 'right',
   },
 });
