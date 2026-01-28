@@ -13,12 +13,12 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
   Pressable,
-  SafeAreaView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View
 } from "react-native";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from "../context/AppContext";
 import { db } from "../firebaseConfig";
 
@@ -53,6 +53,7 @@ const COLORS = {
   gradientJournal: ["#811855ff", "#D18E4E"],
   gradientGoals: ["#795D94", "#5C4673"],
   gradientNotes: ["#5D8B7E", "#3A665A"],
+  gradientSharedGoals: ["#4A6FA5", "#6B8CC7"],
 
   textOnGradient: "#FFFFFF",
 };
@@ -62,7 +63,6 @@ const SPACING = 16;
 const CARD_WIDTH = Math.round(width * 0.65); 
 const ITEM_SIZE = CARD_WIDTH + SPACING; 
 const PADDING_LEFT = 20; 
-
 
 //
 // Dedicated Focus Block (Main task visualization)
@@ -99,7 +99,6 @@ const FocusBlock = ({ item, onPress }) => (
         </Pressable>
     </View>
 );
-
 
 //
 // Carousel Card (Displays top 3 items)
@@ -149,11 +148,11 @@ function CarouselCard({ item, index, scrollX, onPress }) {
         style={({ pressed }) => [styles.cardInner, pressed && { transform: [{ scale: 0.986 }] }]}
       >
         <View style={styles.cardTop}>
-  <View>
-    <Text style={[styles.cardLabel, { color: COLORS.textOnGradient + 'cc' }]}>{item.title}</Text> 
-  </View>
-  <Ionicons name={item.icon} size={28} color={COLORS.textOnGradient} />
-</View>
+          <View>
+            <Text style={[styles.cardLabel, { color: COLORS.textOnGradient + 'cc' }]}>{item.title}</Text> 
+          </View>
+          <Ionicons name={item.icon} size={28} color={COLORS.textOnGradient} />
+        </View>
         
         <Text style={[styles.cardValue, { color: COLORS.textOnGradient }]}> 
           {typeof item.value === "number" ? item.value : item.value}
@@ -167,7 +166,7 @@ function CarouselCard({ item, index, scrollX, onPress }) {
           <View style={styles.cardRecent}>
             {item.recentItems.slice(0, 3).map((r, i) => (
               <Text key={i} style={[styles.cardRecentText, { color: COLORS.textOnGradient + 'aa' }]} numberOfLines={1}> 
-                • {r.title || r.taskName || r.name || "Untitled"}
+                • {r.title || r.name || r.goalName || "Untitled"}
               </Text>
             ))}
           </View>
@@ -233,10 +232,10 @@ const QuickStatsCard = ({ goalsCompleted, milestonesCompleted }) => (
     </View>
 );
 
-
 export default function HomeScreen() {
   const navigation = useNavigation();
-  const { user } = useApp();
+  const { user, appId } = useApp(); // Added appId from context
+  const insets = useSafeAreaInsets();
   
   // Data states
   const [backlogCount, setBacklogCount] = useState(0); 
@@ -246,7 +245,8 @@ export default function HomeScreen() {
   const [allTasks, setAllTasks] = useState([]);
   const [allGoals, setAllGoals] = useState([]);
   const [allNotes, setAllNotes] = useState([]);
-  const [allJournalEntries, setAllJournalEntries] = useState([]); // ← NEW
+  const [allJournalEntries, setAllJournalEntries] = useState([]);
+  const [sharedGoals, setSharedGoals] = useState([]);
 
   // derived content
   const topTask = allTasks
@@ -255,13 +255,16 @@ export default function HomeScreen() {
   const activeGoals = allGoals.filter((g) => g.status !== "completed");
   const pendingTasks = allTasks.filter((t) => !t.completed); 
 
+  // Shared Goals derived data - now using correct path
+  const sharedGoalsCount = sharedGoals.length;
+  const top3SharedGoals = sharedGoals.slice(0, 3);
+
   // Goal Stats Calculation
   const goalsCompletedCount = allGoals.filter(g => g.status === 'completed').length;
   const milestonesCompletedCount = allGoals.reduce((total, goal) => {
       return total + (goal.milestones?.filter(m => m.completed).length || 0);
   }, 0);
 
-  // ← FIXED: Now uses real journal entries
   const top3Journal = allJournalEntries
     .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
     .slice(0, 3);
@@ -286,7 +289,7 @@ export default function HomeScreen() {
 
   const carouselData = useMemo(
     () => [
-      // 1. Journal – NOW USES REAL JOURNAL DATA
+      // 1. Journal
       {
         id: "journal",
         title: "Journal",
@@ -321,8 +324,21 @@ export default function HomeScreen() {
         recentItems: top3Goals,
         route: "Goals",
       },
+      // 4. Shared Goals
+      {
+        id: "sharedGoals",
+        title: "Shared Goals",
+        icon: "people-outline",
+        value: sharedGoalsCount || 0,
+        subtitle: sharedGoalsCount
+          ? `${sharedGoalsCount} collaborative goals`
+          : "No shared goals yet",
+        gradient: COLORS.gradientSharedGoals,
+        recentItems: top3SharedGoals,
+        route: "Shared Goals",
+      },
     ],
-    [allJournalEntries, allNotes, activeGoals, top3Journal, top3Notes, top3Goals]
+    [allJournalEntries, allNotes, activeGoals, sharedGoalsCount, top3Journal, top3Notes, top3Goals, top3SharedGoals]
   );
   
   // Reanimated shared values
@@ -398,120 +414,162 @@ export default function HomeScreen() {
 
     const unsubGoals = listenTo("goals", setAllGoals);
     const unsubNotes = listenTo("notes", setAllNotes); 
-    const unsubJournal = listenTo("journal", setAllJournalEntries); // ← ADDED
+    const unsubJournal = listenTo("journal", setAllJournalEntries);
 
     return () => {
       unsubProfile();
       unsubTasks();
       unsubGoals();
       unsubNotes();
-      unsubJournal(); // ← CLEANUP
+      unsubJournal();
     };
   }, [user]);
 
+  // CORRECTED: Shared goals listener - matches SharedGoalsScreen exactly
+  useEffect(() => {
+    if (!user?.uid || !appId) {
+      console.log("Missing user or appId for shared goals:", { userId: user?.uid, appId });
+      return;
+    }
+
+    console.log("Setting up shared goals listener with appId:", appId);
+    
+    // Use the EXACT SAME path as SharedGoalsScreen
+    const path = `artifacts/${appId}/public/data/sharedGoals`;
+    
+    console.log("Firestore path for shared goals:", path);
+    
+    const q = query(
+      collection(db, path),
+      where("participants", "array-contains", user.uid)
+    );
+
+    const unsubSharedGoals = onSnapshot(q, 
+      (snap) => {
+        console.log("Shared goals snapshot received, count:", snap.size);
+        
+        const items = snap.docs.map(d => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        
+        console.log("Processed shared goals:", items.length, "items");
+        setSharedGoals(items);
+      }, 
+      (err) => {
+        console.error("Error listening to shared goals:", err);
+      }
+    );
+
+    return () => {
+      console.log("Cleaning up shared goals listener");
+      unsubSharedGoals();
+    };
+  }, [user, appId]);
 
   const handleCardPress = (item) => {
     if (item.route) navigation.navigate(item.route);
   };
 
-
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.backgroundBase }}>
-      <SafeAreaView style={styles.safeArea}>
-        <Animated.ScrollView 
-            contentContainerStyle={styles.container} 
-            showsVerticalScrollIndicator={false} 
-            onScroll={scrollHandler} 
-            scrollEventThrottle={16}
-        >
-          {/* Header */}
-          <View style={[styles.headerRow, styles.headerRowModified]}>
-            <View style={styles.headerLeft}>
-                <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.toggleDrawer())} style={styles.menuBtn}>
-                  <Ionicons name="menu" size={20} color={COLORS.textPrimary} />
-                </TouchableOpacity>
-
-                <View style={styles.greetingWrap}>
-                  <Text style={styles.greetingDate}>
-                    {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
-                  </Text>
-                  <Text style={styles.greetingTitle}>
-                    Hello, <Text style={{ fontWeight: "700" }}>{userProfile.username || "Explorer"}</Text>
-                  </Text>
-                </View>
-            </View>
-
-            <View style={styles.headerRight}>
-              <Animated.View style={[styles.primaryPillWrapper, breathStyle]}>
-                <TouchableOpacity style={styles.primaryPillTouchable} onPress={() => navigation.navigate("Planner")}>
-                  <Ionicons name="add" size={18} color={COLORS.accentBlush} />
-                  <Text style={[styles.primaryPillText, { color: COLORS.accentBlush }]}>Add Task</Text>
-                </TouchableOpacity>
-              </Animated.View>
-
-              <TouchableOpacity onPress={() => navigation.navigate("Settings")} style={styles.settingsBtn}>
-                <Ionicons name="settings-outline" size={24} color={COLORS.textPrimary} />
+    <View style={{ 
+      flex: 1, 
+      backgroundColor: COLORS.backgroundBase,
+      paddingTop: insets.top,
+    }}>
+      <Animated.ScrollView 
+          contentContainerStyle={[styles.container, { paddingBottom: insets.bottom }]} 
+          showsVerticalScrollIndicator={false} 
+          onScroll={scrollHandler} 
+          scrollEventThrottle={16}
+      >
+        {/* Header */}
+        <View style={[styles.headerRow, styles.headerRowModified]}>
+          <View style={styles.headerLeft}>
+              <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.toggleDrawer())} style={styles.menuBtn}>
+                <Ionicons name="menu" size={20} color={COLORS.textPrimary} />
               </TouchableOpacity>
-            </View>
-          </View>
-          
-          {/* Dedicated Focus Block */}
-          <FocusBlock item={focusBlockData} onPress={handleCardPress} />
 
-          {/* Dedicated Quick Stats Card */}
-          <QuickStatsCard 
-            goalsCompleted={goalsCompletedCount} 
-            milestonesCompleted={milestonesCompletedCount} 
-          />
-
-          {/* Section for Carousel */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Explore</Text>
-            <Text style={styles.sectionSub}>Swipe to browse your content</Text>
+              <View style={styles.greetingWrap}>
+                <Text style={styles.greetingDate}>
+                  {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
+                </Text>
+                <Text style={styles.greetingTitle}>
+                  Hello, <Text style={{ fontWeight: "700" }}>{userProfile.username || "Explorer"}</Text>
+                </Text>
+              </View>
           </View>
 
-          {/* Carousel */}
-          <View style={styles.carouselWrap}>
-            <Animated.ScrollView
-              ref={carouselRef}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              snapToInterval={ITEM_SIZE}
-              decelerationRate="fast"
-              contentContainerStyle={{
-                paddingLeft: PADDING_LEFT, 
-                paddingRight: PADDING_LEFT,
-                alignItems: "center",
-              }}
-              onScroll={scrollHandler}
-              scrollEventThrottle={16}
-              onMomentumScrollEnd={(e) => {
-                const x = e.nativeEvent.contentOffset.x || 0;
-                const idx = Math.round(x / ITEM_SIZE);
-                setActiveIndex(idx);
-              }}
-            >
-              {carouselData.map((c, i) => (
-                <CarouselCard key={c.id} item={c} index={i} scrollX={scrollX} onPress={handleCardPress} />
+          <View style={styles.headerRight}>
+            <Animated.View style={[styles.primaryPillWrapper, breathStyle]}>
+              <TouchableOpacity style={styles.primaryPillTouchable} onPress={() => navigation.navigate("Planner")}>
+                <Ionicons name="add" size={18} color={COLORS.accentBlush} />
+                <Text style={[styles.primaryPillText, { color: COLORS.accentBlush }]}>Add Task</Text>
+              </TouchableOpacity>
+            </Animated.View>
+
+            <TouchableOpacity onPress={() => navigation.navigate("Settings")} style={styles.settingsBtn}>
+              <Ionicons name="settings-outline" size={24} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+          </View>
+        </View>
+        
+        {/* Dedicated Focus Block */}
+        <FocusBlock item={focusBlockData} onPress={handleCardPress} />
+
+        {/* Dedicated Quick Stats Card */}
+        <QuickStatsCard 
+          goalsCompleted={goalsCompletedCount} 
+          milestonesCompleted={milestonesCompletedCount} 
+        />
+
+        {/* Section for Carousel */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Explore</Text>
+          <Text style={styles.sectionSub}>Swipe to browse your content</Text>
+        </View>
+
+        {/* Carousel */}
+        <View style={styles.carouselWrap}>
+          <Animated.ScrollView
+            ref={carouselRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={ITEM_SIZE}
+            decelerationRate="fast"
+            contentContainerStyle={{
+              paddingLeft: PADDING_LEFT, 
+              paddingRight: PADDING_LEFT,
+              alignItems: "center",
+            }}
+            onScroll={scrollHandler}
+            scrollEventThrottle={16}
+            onMomentumScrollEnd={(e) => {
+              const x = e.nativeEvent.contentOffset.x || 0;
+              const idx = Math.round(x / ITEM_SIZE);
+              setActiveIndex(idx);
+            }}
+          >
+            {carouselData.map((c, i) => (
+              <CarouselCard key={c.id} item={c} index={i} scrollX={scrollX} onPress={handleCardPress} />
+            ))}
+          </Animated.ScrollView>
+
+          {/* Dot Indicator */}
+          <View style={styles.dotIndicatorWrap}>
+              {carouselData.map((_, i) => (
+                  <DotIndicator 
+                      key={i} 
+                      index={i} 
+                      activeIndex={activeIndex} 
+                      dotAnim={dotAnimShared[i]}
+                  />
               ))}
-            </Animated.ScrollView>
-
-            {/* Dot Indicator */}
-            <View style={styles.dotIndicatorWrap}>
-                {carouselData.map((_, i) => (
-                    <DotIndicator 
-                        key={i} 
-                        index={i} 
-                        activeIndex={activeIndex} 
-                        dotAnim={dotAnimShared[i]}
-                    />
-                ))}
-            </View>
           </View>
+        </View>
 
-          <View style={{ height: 40 }} /> 
-        </Animated.ScrollView>
-      </SafeAreaView>
+        <View style={{ height: 40 }} /> 
+      </Animated.ScrollView>
     </View>
   );
 }
@@ -520,11 +578,9 @@ export default function HomeScreen() {
 // Styles 
 //
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: COLORS.backgroundBase },
   container: { 
     paddingHorizontal: 20, 
     paddingTop: 18, 
-    paddingBottom: 40, 
     backgroundColor: COLORS.backgroundLayer 
   }, 
 

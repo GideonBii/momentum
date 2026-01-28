@@ -89,10 +89,22 @@ const listItemRenderer = ({ tnode, key, style }) => {
     );
 
     if (hasCheckbox) {
-        // Extract text content from the list item
+        // Extract text content from the list item - more robust extraction
+        const extractTextFromNode = (node) => {
+            if (!node) return '';
+            if (node.name === '#text') return node.data || '';
+            if (node.name === 'span' && node.children) {
+                return node.children.map(child => extractTextFromNode(child)).join('');
+            }
+            if (node.children) {
+                return node.children.map(child => extractTextFromNode(child)).join('');
+            }
+            return '';
+        };
+
         const textNodes = tnode.domNode.children
-            .filter(child => child.name === '#text' || (child.name === 'span' && child.children?.[0]?.name === '#text'))
-            .map(child => child.data || child.children?.[0]?.data || '')
+            .filter(child => child.name !== 'input')
+            .map(child => extractTextFromNode(child))
             .join(' ')
             .trim();
 
@@ -120,10 +132,29 @@ const listItemRenderer = ({ tnode, key, style }) => {
     }
 
     // Regular list item (bullet points or numbers)
+    // Extract all text content from the list item
+    const extractText = (node) => {
+        if (!node) return '';
+        if (node.data) return node.data;
+        if (node.children) {
+            return node.children
+                .map(child => extractText(child))
+                .join('');
+        }
+        return '';
+    };
+
+    const textContent = tnode.domNode.children
+        ? tnode.domNode.children.map(child => extractText(child)).join('').trim()
+        : '';
+
+    // Only render if there's actual text content
+    if (!textContent) return null;
+
     return (
         <View key={key} style={[style, styles.defaultListItem]}>
             <Text style={styles.defaultListText}>
-                {tnode.domNode.children?.[0]?.data || ''}
+                {textContent}
             </Text>
         </View>
     );

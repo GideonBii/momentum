@@ -1,4 +1,4 @@
-// App.js - FIXED VERSION WITH AUTH PROVIDER
+// App.js - FINAL FIXED VERSION
 import { Ionicons } from "@expo/vector-icons";
 import {
   createDrawerNavigator,
@@ -23,9 +23,8 @@ import {
   View,
 } from "react-native";
 
-// ✅ Import BOTH providers
-import { AppProvider } from "./context/AppContext";
-import { AuthProvider } from "./context/AuthContext"; // ADD THIS LINE
+// ✅ Import App provider
+import { AppProvider, useApp } from "./context/AppContext";
 
 // Import Splash Screen
 import SplashScreen from "./screens/SplashScreen";
@@ -127,7 +126,7 @@ function BottomTabs({ navigation }) {
         <Tab.Screen name="Profile" component={ProfileScreen} options={{ tabBarButton: () => null }} />
       </Tab.Navigator>
 
-      {/* Custom Dock */}
+      {/* Custom Dock - FIXED: Ensure all text is wrapped in Text components */}
       <View style={styles.customDockWrap} pointerEvents="box-none">
         <View style={styles.customDock}>
           {[
@@ -181,12 +180,10 @@ function BottomTabs({ navigation }) {
 }
 
 /* ======================
-   Custom Drawer Content - FIXED
+   Custom Drawer Content - COMPLETELY FIXED
    ====================== */
 function CustomDrawerContent(props) {
-  // ✅ FIXED: Remove useApp hook usage here for now
-  const { user = null, profile = { username: "User", profilePic: null } } = props; // Use props instead of hook
-
+  const { user, profile } = useApp();
   const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
 
   const handleLogout = () => setIsLogoutModalVisible(true);
@@ -194,7 +191,6 @@ function CustomDrawerContent(props) {
   const confirmLogout = async () => {
     setIsLogoutModalVisible(false);
     try {
-      // Import auth directly for logout
       const { auth } = require("./firebaseConfig");
       const { signOut } = require("firebase/auth");
       await signOut(auth);
@@ -203,6 +199,13 @@ function CustomDrawerContent(props) {
       console.error("Logout Error:", error);
     }
   };
+
+  // FIXED: Create custom drawer items without using DrawerItem component
+  const drawerItems = [
+    { label: "Journal", icon: "book-outline", screen: "Journal" },
+    { label: "Shared Goals", icon: "people-outline", screen: "Shared Goals" },
+    { label: "Settings", icon: "settings-outline", screen: "Settings" },
+  ];
 
   return (
     <DrawerContentScrollView
@@ -232,51 +235,32 @@ function CustomDrawerContent(props) {
           style={styles.drawerAvatar}
         />
         <Text style={styles.drawerName}>
-          {profile?.username || "Momentum User"}
+          {profile?.username || user?.displayName || "Momentum User"}
         </Text>
       </TouchableOpacity>
 
       <View style={{ flex: 1, paddingTop: 10 }}>
-        <DrawerItem
-          label="Journal"
-          labelStyle={styles.drawerItem}
-          icon={({ color }) => (
-            <Ionicons name="book-outline" size={20} color={color} />
-          )}
-          onPress={() => props.navigation.navigate("Tabs", { screen: "Journal" })}
-        />
-        <DrawerItem
-          label="Shared Goals"
-          labelStyle={styles.drawerItem}
-          icon={({ color }) => (
-            <Ionicons name="people-outline" size={20} color={color} />
-          )}
-          onPress={() =>
-            props.navigation.navigate("Tabs", { screen: "Shared Goals" })
-          }
-        />
-        <DrawerItem
-          label="Settings"
-          labelStyle={styles.drawerItem}
-          icon={({ color }) => (
-            <Ionicons name="settings-outline" size={20} color={color} />
-          )}
-          onPress={() =>
-            props.navigation.navigate("Tabs", { screen: "Settings" })
-          }
-        />
-        <DrawerItem
-          label="Logout"
-          labelStyle={[styles.drawerItem, { color: COLORS.accentBlush }]}
-          icon={() => (
-            <Ionicons
-              name="log-out-outline"
-              size={20}
-              color={COLORS.accentBlush}
-            />
-          )}
+        {drawerItems.map((item) => (
+          <TouchableOpacity
+            key={item.screen}
+            style={styles.customDrawerItem}
+            onPress={() => props.navigation.navigate("Tabs", { screen: item.screen })}
+          >
+            <Ionicons name={item.icon} size={20} color={COLORS.textPrimary} />
+            <Text style={styles.customDrawerItemLabel}>{item.label}</Text>
+          </TouchableOpacity>
+        ))}
+        
+        {/* Logout Button */}
+        <TouchableOpacity
+          style={[styles.customDrawerItem, { marginTop: 20 }]}
           onPress={handleLogout}
-        />
+        >
+          <Ionicons name="log-out-outline" size={20} color={COLORS.accentBlush} />
+          <Text style={[styles.customDrawerItemLabel, { color: COLORS.accentBlush }]}>
+            Logout
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.drawerFooter}>
@@ -331,21 +315,12 @@ function CustomDrawerContent(props) {
 }
 
 /* ================
-   Drawer & Root Nav - FIXED
+   Drawer & Root Nav
    ================ */
 function AppDrawer() {
-  // ✅ FIXED: Import useApp here where it's safe
-  const { useApp } = require("./context/AppContext");
-  const { user, profile } = useApp();
-
-  // CustomDrawerContentWithProps now receives data as props
-  const CustomDrawerContentWithProps = (props) => (
-    <CustomDrawerContent {...props} user={user} profile={profile} />
-  );
-
   return (
     <Drawer.Navigator
-      drawerContent={CustomDrawerContentWithProps}
+      drawerContent={(props) => <CustomDrawerContent {...props} />}
       screenOptions={{
         headerShown: true,
         headerTitleAlign: "center",
@@ -382,10 +357,8 @@ function AuthStackScreen() {
   );
 }
 
-// ✅ RootNavigator - FIXED
+// ✅ RootNavigator
 function RootNavigator() {
-  const { useApp } = require("./context/AppContext");
-  
   const { user, loading } = useApp();
 
   if (loading) {
@@ -411,7 +384,7 @@ function RootNavigator() {
 }
 
 /* ======================
-   ✅ Final App Component - FIXED WITH AUTH PROVIDER
+   ✅ Final App Component
    ====================== */
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -425,17 +398,14 @@ export default function App() {
   }
 
   return (
-    <AuthProvider> {/* ✅ WRAP WITH AUTH PROVIDER FIRST */}
-      <AppProvider> {/* ✅ THEN APP PROVIDER */}
-        <NavigationContainer>
-          <RootNavigator />
-        </NavigationContainer>
-      </AppProvider>
-    </AuthProvider>
+    <AppProvider>
+      <NavigationContainer>
+        <RootNavigator />
+      </NavigationContainer>
+    </AppProvider>
   );
 }
 
-// ... your existing styles remain the same ...
 const styles = StyleSheet.create({
   loadingRoot: {
     flex: 1,
@@ -443,7 +413,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: COLORS.backgroundBase,
   },
-  appHeaderContainer: { paddingHorizontal: 15, paddingTop: 30, paddingBottom: 10 },
+  appHeaderContainer: { 
+    paddingHorizontal: 15, 
+    paddingTop: 30, 
+    paddingBottom: 10 
+  },
   appNameHeader: {
     fontSize: 26,
     fontWeight: "900",
@@ -467,8 +441,26 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: COLORS.accentBlush + "40",
   },
-  drawerName: { fontSize: 18, fontWeight: "700", color: COLORS.textPrimary },
-  drawerItem: { fontSize: 16, fontWeight: "600", color: COLORS.textPrimary },
+  drawerName: { 
+    fontSize: 18, 
+    fontWeight: "700", 
+    color: COLORS.textPrimary 
+  },
+  customDrawerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    marginHorizontal: 10,
+    marginVertical: 4,
+    borderRadius: 10,
+  },
+  customDrawerItemLabel: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: COLORS.textPrimary,
+    marginLeft: 12,
+  },
   drawerFooter: {
     paddingVertical: 15,
     alignItems: "center",
@@ -505,8 +497,18 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 10,
   },
-  dockItemWrap: { alignItems: "center", justifyContent: "center", flex: 1 },
-  dockBubble: { width: 60, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
+  dockItemWrap: { 
+    alignItems: "center", 
+    justifyContent: "center", 
+    flex: 1 
+  },
+  dockBubble: { 
+    width: 60, 
+    height: 38, 
+    borderRadius: 19, 
+    alignItems: "center", 
+    justifyContent: "center" 
+  },
   dockBubbleActive: {
     backgroundColor: COLORS.accentSage,
     shadowColor: COLORS.accentSage,
@@ -515,8 +517,15 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 8,
   },
-  dockBubbleInactive: { backgroundColor: "transparent" },
-  dockLabel: { marginTop: 2, fontSize: 11, color: COLORS.textPrimary, fontWeight: "600" },
+  dockBubbleInactive: { 
+    backgroundColor: "transparent" 
+  },
+  dockLabel: { 
+    marginTop: 2, 
+    fontSize: 11, 
+    color: COLORS.textPrimary, 
+    fontWeight: "600" 
+  },
   centeredView: {
     flex: 1,
     justifyContent: "center",
@@ -539,9 +548,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.accentBlush + "20",
   },
-  modalTitle: { fontSize: 18, fontWeight: "700", color: COLORS.textPrimary, marginBottom: 8 },
-  modalText: { marginBottom: 20, textAlign: "center", fontSize: 14, color: COLORS.textSecondary },
-  modalButtonContainer: { flexDirection: "row", justifyContent: "space-between", width: "100%", marginTop: 10 },
+  modalTitle: { 
+    fontSize: 18, 
+    fontWeight: "700", 
+    color: COLORS.textPrimary, 
+    marginBottom: 8 
+  },
+  modalText: { 
+    marginBottom: 20, 
+    textAlign: "center", 
+    fontSize: 14, 
+    color: COLORS.textSecondary 
+  },
+  modalButtonContainer: { 
+    flexDirection: "row", 
+    justifyContent: "space-between", 
+    width: "100%", 
+    marginTop: 10 
+  },
   modalButton: {
     borderRadius: 12,
     paddingVertical: 12,
@@ -564,5 +588,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.textSecondary + "40",
   },
-  buttonText: { fontWeight: "700", fontSize: 14 },
+  buttonText: { 
+    fontWeight: "700", 
+    fontSize: 14 
+  },
 });

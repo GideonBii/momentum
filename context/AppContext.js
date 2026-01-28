@@ -4,7 +4,10 @@ import { doc, onSnapshot } from "firebase/firestore";
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { auth, db } from "../firebaseConfig";
 
+const APP_ID = "momentum-app";
 const AppContext = createContext();
+
+
 
 export const AppProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -13,8 +16,11 @@ export const AppProvider = ({ children }) => {
     bio: "",
     profilePic: null,
   });
+  
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+    const appId = APP_ID;
+
 
   // Helper function to get default username
   const getDefaultUsername = (firebaseUser) => {
@@ -104,6 +110,7 @@ export const AppProvider = ({ children }) => {
     profile,
     loading,
     error,
+    appId,
     clearError: () => setError(null),
     // Optional: Add methods to update profile if needed
     updateProfile: (updates) => setProfile(prev => ({ ...prev, ...updates }))

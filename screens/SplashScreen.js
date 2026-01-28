@@ -22,6 +22,9 @@ const COLORS = {
   accent: "#4A3228", // Dark accent
 };
 
+// Create animated Path component outside the function
+const AnimatedPath = Animated.createAnimatedComponent(Path);
+
 export default function SplashScreen({ onLoadingComplete }) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.9)).current;
@@ -137,7 +140,7 @@ export default function SplashScreen({ onLoadingComplete }) {
                     strokeDasharray="40"
                     strokeDashoffset={connectionAnims[index - 1].interpolate({
                       inputRange: [0, 1],
-                      outputRange: [40, 0]
+                      outputRange: ['40', '0']
                     })}
                     opacity={connectionAnims[index - 1]}
                   />
@@ -176,8 +179,6 @@ export default function SplashScreen({ onLoadingComplete }) {
       </View>
     );
   };
-
-  const AnimatedPath = Animated.createAnimatedComponent(Path);
 
   return (
     <View style={[styles.container, { backgroundColor: COLORS.background }]}>
