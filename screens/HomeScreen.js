@@ -50,10 +50,10 @@ const COLORS = {
   shadowDark: "rgba(0,0,0,0.06)",
   
   gradientFocus: ["#1b1a5eff", "#B37D77"],
-  gradientJournal: ["#811855ff", "#D18E4E"],
+  gradientJournal: ["#811855ff", "#383531"],
   gradientGoals: ["#795D94", "#5C4673"],
-  gradientNotes: ["#5D8B7E", "#3A665A"],
-  gradientSharedGoals: ["#4A6FA5", "#6B8CC7"],
+  gradientNotes: ["#5D8B7E", "#052b20"],
+  gradientSharedGoals: ["#4A6FA5", "#09224d"],
 
   textOnGradient: "#FFFFFF",
 };
@@ -112,14 +112,26 @@ function CarouselCard({ item, index, scrollX, onPress }) {
     const norm = dist / ITEM_SIZE; 
 
     const scale = interpolate(Math.abs(norm), [0, 1], [1, 0.92], Extrapolate.CLAMP);
-    const rotate = interpolate(norm, [-1, 0, 1], ["6deg", "0deg", "-6deg"], Extrapolate.CLAMP);
+    const rotateValue = interpolate(
+  norm,
+  [-1, 0, 1],
+  [6, 0, -6],
+  Extrapolate.CLAMP
+);
+
+const safeRotate = Number.isFinite(rotateValue) ? rotateValue : 0;
     const translateY = interpolate(Math.abs(norm), [0, 1], [0, 12], Extrapolate.CLAMP);
     const opacity = interpolate(Math.abs(norm), [0, 1], [1, 0.72], Extrapolate.CLAMP);
 
     return {
-      transform: [{ translateY }, { scale }, { rotateZ: rotate }],
-      opacity,
-    };
+  transform: [
+    { translateY },
+    { scale },
+    { rotateZ: `${safeRotate}deg` },
+  ],
+  opacity,
+};
+
   });
 
   return (
@@ -289,42 +301,7 @@ export default function HomeScreen() {
 
   const carouselData = useMemo(
     () => [
-      // 1. Journal
-      {
-        id: "journal",
-        title: "Journal",
-        icon: "book-outline", 
-        value: allJournalEntries.length || 0,
-        subtitle: allJournalEntries.length 
-          ? `${allJournalEntries.length} journal entries`
-          : "No entries yet",
-        gradient: COLORS.gradientJournal,
-        recentItems: top3Journal,
-        route: "Journal",
-      },
-      // 2. Notes
-      {
-        id: "notes",
-        title: "Notes",
-        icon: "document-text-outline", 
-        value: allNotes.length || 0,
-        subtitle: `${allNotes.length} captured ideas`,
-        gradient: COLORS.gradientNotes, 
-        recentItems: top3Notes,
-        route: "Notes",
-      },
-      // 3. Goals
-      {
-        id: "goals",
-        title: "Goals",
-        icon: "trending-up-outline",
-        value: activeGoals.length,
-        subtitle: `${activeGoals.reduce((acc, g) => acc + (g.milestones?.length || 0), 0)} milestones to achieve`,
-        gradient: COLORS.gradientGoals,
-        recentItems: top3Goals,
-        route: "Goals",
-      },
-      // 4. Shared Goals
+      // 1. Shared Goals
       {
         id: "sharedGoals",
         title: "Shared Goals",
@@ -337,6 +314,42 @@ export default function HomeScreen() {
         recentItems: top3SharedGoals,
         route: "Shared Goals",
       },
+      // 2. Journal
+      {
+        id: "journal",
+        title: "Journal",
+        icon: "book-outline", 
+        value: allJournalEntries.length || 0,
+        subtitle: allJournalEntries.length 
+          ? `${allJournalEntries.length} journal entries`
+          : "No entries yet",
+        gradient: COLORS.gradientJournal,
+        recentItems: top3Journal,
+        route: "Journal",
+      },
+      // 3. Notes
+      {
+        id: "notes",
+        title: "Notes",
+        icon: "document-text-outline", 
+        value: allNotes.length || 0,
+        subtitle: `${allNotes.length} captured ideas`,
+        gradient: COLORS.gradientNotes, 
+        recentItems: top3Notes,
+        route: "Notes",
+      },
+      // 4. Goals
+      {
+        id: "goals",
+        title: "Goals",
+        icon: "trending-up-outline",
+        value: activeGoals.length,
+        subtitle: `${activeGoals.reduce((acc, g) => acc + (g.milestones?.length || 0), 0)} milestones to achieve`,
+        gradient: COLORS.gradientGoals,
+        recentItems: top3Goals,
+        route: "Goals",
+      },
+      
     ],
     [allJournalEntries, allNotes, activeGoals, sharedGoalsCount, top3Journal, top3Notes, top3Goals, top3SharedGoals]
   );

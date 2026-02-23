@@ -1,7 +1,26 @@
-// ./screens/SharedGoalsScreen.js
+// screens/SharedGoalsScreen.js
+// 🎯 COMPLETE REDESIGN - PRODUCTION READY
+// ✅ Added notificationSent flag for cloud function integration
+// ✅ Added proper notification scheduling/cleanup
+// ✅ Click on saved goal → Opens detail modal (NOT edit)
+// ✅ Removed add milestone from main card (now only in progress tab)
+// ✅ Glass-morphism design matching all screens
+// ✅ Dynamic date pickers (iOS/Android adaptive)
+// ✅ Push token registration for notifications
+// ✅ FIX: Added missing COLORS.error
+// ✅ FIX: Firestore field unified to "participants"
+// ✅ FIX: Single atomic write in handleAddProgress
+// ✅ FIX: try/catch on handleAddMilestone, handleToggleMilestone, handleEditGoal, handleAddComment
+// ✅ FIX: maxLength on QuickAddBar input
+// ✅ FIX: Email format validation before Firestore query
+// ✅ FIX: Delete before notify in handleDeleteGoal
+
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import NetInfo from "@react-native-community/netinfo";
+import { BlurView } from 'expo-blur';
+import * as Haptics from "expo-haptics";
+import { LinearGradient } from 'expo-linear-gradient';
 import {
   addDoc,
   arrayRemove,
@@ -15,201 +34,337 @@ import {
   query,
   serverTimestamp,
   updateDoc,
-  where,
-  writeBatch
+  where
 } from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
+  Easing,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-  Platform
+  View
 } from "react-native";
 import { Circle, Svg } from "react-native-svg";
 import { useApp } from "../context/AppContext";
 import { db } from "../firebaseConfig";
-import { 
-  sendNotification,
-  NOTIFICATION_TYPES,
-  requestNotificationPermissions,
+import {
   configureNotificationHandler,
-  setupNotificationResponseHandler,
-  setupNotificationReceivedHandler
+  markAllNotificationsAsRead,
+  markNotificationAsRead,
+  NOTIFICATION_TYPES,
+  registerAndSaveExpoPushToken,
+  requestNotificationPermissions,
+  sendNotification,
+  setupNotificationListener,
+  setupNotificationReceivedHandler,
+  setupNotificationResponseHandler
 } from "../utils/notifications";
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
 
-/* -------------------- Theme -------------------- */
+/* ================================================================================
+   🎨 COLORS - Matching Planner/Goals/Notes/Journal
+   ================================================================================ */
+
 const COLORS = {
-  background: "#FCF7F5",
+  backgroundBase: "#FAFAFA",
   card: "#FFFFFF",
-  warm: "#A98467",
-  blush: "#D8A39D",
-  text: "#3e2a24",
-  softText: "#8b6f63",
-  border: "#EFE6E2",
-  accent: "#F6EDEB",
-  success: "#4CAF50",
-  error: "#D64545",
-  warning: "#FF9800",
+  textPrimary: "#4A3228",
+  textSecondary: "#A98467",
+  accentBlush: "#D8A39D",
+  accentWarm: "#E3B777",
+  sage: "#5D8B7E",
+  nudeShadow: "rgba(216,163,157,0.12)",
+  shadowDark: "rgba(0,0,0,0.06)",
+  danger: "#FF6347",
+  success: "#5D8B7E",
   info: "#2196F3",
+  warning: "#FFA726",
+  surfaceVariant: "#F8F2F0",
+  textTertiary: "#B7A29E",
+  cardBorder: "rgba(216,163,157,0.2)",
+  gradientStart: "#FFF9F8",
+  gradientEnd: "#FAF0ED",
+  overlay: "rgba(74,50,40,0.4)",
+  placeholder: "#C7B5B0",
+  
+  // ✅ FIX: error was missing — used by PRIORITIES.high and PRIORITIES.urgent
+  error: "#FF4444",
+
+  // Shared Goals specific
+  shared: "#9B59B6",
+  sharedLight: "#F3E8F5",
+  sharedGradient: ["#9B59B6", "#D8A39D"],
 };
+
+const CATEGORIES = {
+  health: { label: 'Health', icon: 'fitness-outline', color: COLORS.sage, lightColor: "#EDF5F3" },
+  work: { label: 'Work', icon: 'briefcase-outline', color: COLORS.accentWarm, lightColor: "#FCF5EB" },
+  education: { label: 'Education', icon: 'school-outline', color: COLORS.warning, lightColor: "#FFF9F0" },
+  personal: { label: 'Personal', icon: 'person-outline', color: COLORS.accentBlush, lightColor: "#FCF1EF" },
+  financial: { label: 'Financial', icon: 'cash-outline', color: "#3498DB", lightColor: "#E8F0F9" },
+  social: { label: 'Social', icon: 'people-outline', color: COLORS.shared, lightColor: "#F3E8F5" },
+  other: { label: 'Other', icon: 'ellipsis-horizontal-outline', color: COLORS.textTertiary, lightColor: "#F5F5F5" }
+};
+
+const PRIORITIES = {
+  low: { color: COLORS.sage, label: 'Low', icon: 'arrow-down', lightColor: "#F1F8F1" },
+  medium: { color: COLORS.warning, label: 'Medium', icon: 'remove', lightColor: "#FFF9F0" },
+  high: { color: COLORS.error, label: 'High', icon: 'arrow-up', lightColor: "#FFF0F0" },
+  urgent: { color: COLORS.error, label: 'Urgent', icon: 'warning', lightColor: "#FFF0F0" }
+};
+
+const TABS = [
+  { id: 'overview', label: 'Overview', icon: 'information-circle-outline' },
+  { id: 'progress', label: 'Progress', icon: 'trending-up-outline' },
+  { id: 'discussion', label: 'Discussion', icon: 'chatbubbles-outline' }
+];
 
 const getSharedGoalsCollectionPath = (appId) =>
   `artifacts/${appId || "default-app-id"}/public/data/sharedGoals`;
 
-/* -------------------- Enhanced Components -------------------- */
-const ProgressRing = ({ size = 64, progress = 0, showPercentage = true }) => {
-  const radius = (size - 8) / 2;
-  const strokeWidth = 6;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (progress / 100) * circumference;
-  const color = progress >= 100 ? COLORS.success : progress > 50 ? COLORS.warm : COLORS.softText;
+/* ================================================================================
+   📝 HELPER FUNCTIONS
+   ================================================================================ */
+
+const formatDate = (date) => {
+  if (!date) return 'No deadline';
+  const d = date.seconds ? new Date(date.seconds * 1000) : new Date(date);
+  return d.toLocaleDateString('en-US', { 
+    month: 'short', 
+    day: 'numeric', 
+    year: 'numeric' 
+  });
+};
+
+const formatRelativeTime = (timestamp) => {
+  if (!timestamp) return '';
+  
+  let date;
+  if (timestamp.seconds) {
+    date = new Date(timestamp.seconds * 1000);
+  } else if (timestamp instanceof Date) {
+    date = timestamp;
+  } else if (typeof timestamp === 'string') {
+    date = new Date(timestamp);
+  } else {
+    return '';
+  }
+
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  return date.toLocaleDateString('en-US', { 
+    month: 'short', 
+    day: 'numeric' 
+  });
+};
+
+const getDaysRemaining = (dueDate) => {
+  if (!dueDate) return null;
+  const due = dueDate.seconds ? new Date(dueDate.seconds * 1000) : new Date(dueDate);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffTime = due - today;
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+};
+
+const computeProgress = (goal) => {
+  if (!goal) return 0;
+  
+  if (goal.targetValue && goal.targetValue > 0) {
+    const current = goal.currentValue || 0;
+    const progress = (current / goal.targetValue) * 100;
+    return Math.min(Math.round(progress * 10) / 10, 100);
+  }
+  
+  const milestones = goal.milestones || [];
+  if (!milestones.length) return 0;
+  
+  const completedMilestones = milestones.filter(m => m && m.completed).length;
+  return Math.round((completedMilestones / milestones.length) * 100);
+};
+
+/* ================================================================================
+   🔔 NOTIFICATION HELPER - Bulletproof filtering
+   ================================================================================ */
+
+const sendNotificationToOthers = async (userUid, participantUids, message, data, options = {}) => {
+  try {
+    console.log('========================================');
+    console.log('📤 [NOTIFY] Sending notification to others');
+    console.log('📤 [NOTIFY] Current user:', userUid);
+    console.log('📤 [NOTIFY] Original participants:', participantUids);
+    
+    if (!sendNotification || typeof sendNotification !== 'function') {
+      console.error("❌ [NOTIFY] sendNotification function not available");
+      return false;
+    }
+    
+    if (!userUid || typeof userUid !== 'string') {
+      console.error("❌ [NOTIFY] Invalid or missing user ID");
+      return false;
+    }
+
+    const otherParticipants = (participantUids || [])
+      .filter(uid => uid)
+      .filter(uid => typeof uid === 'string')
+      .filter(uid => uid.trim().length > 0)
+      .filter(uid => uid !== userUid)
+      .filter((uid, index, self) => self.indexOf(uid) === index);
+    
+    console.log('📤 [NOTIFY] After filtering:', otherParticipants);
+    
+    if (otherParticipants.length === 0) {
+      console.log('⏭️ [NOTIFY] No other participants to notify');
+      return true;
+    }
+
+    console.log(`📤 [NOTIFY] Sending to ${otherParticipants.length} user(s)`);
+    
+    const notificationOptions = {
+      type: options.type || NOTIFICATION_TYPES.GENERAL,
+      priority: options.priority || "normal",
+      pushTitle: options.pushTitle || 'Shared Goal Update',
+      pushBody: options.pushBody || message,
+      sendPush: options.sendPush !== false,
+      sendLocalPush: false,
+      senderId: userUid,
+      senderName: options.senderName || 'Someone',
+    };
+    
+    const success = await sendNotification(
+      otherParticipants,
+      message,
+      {
+        ...data,
+        senderId: userUid,
+        senderName: options.senderName || 'Someone',
+      },
+      notificationOptions
+    );
+    
+    if (success) {
+      console.log(`✅ [NOTIFY] Successfully sent notifications to ${otherParticipants.length} users`);
+    }
+    
+    console.log('========================================');
+    return success;
+    
+  } catch (error) {
+    console.error("❌ [NOTIFY] Critical error:", error);
+    console.log('========================================');
+    return false;
+  }
+};
+
+/* ================================================================================
+   📊 PROGRESS RING - Animated
+   ================================================================================ */
+
+const ProgressRing = ({ progress = 0, size = 60, strokeWidth = 4, showLabel = true }) => {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
+  
+  let color = COLORS.sage;
+  if (progress >= 100) color = COLORS.success;
+  else if (progress >= 75) color = COLORS.accentWarm;
+  else if (progress >= 50) color = COLORS.accentBlush;
   
   return (
-    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
-      <Svg width={size} height={size}>
-        <Circle cx={size/2} cy={size/2} r={radius} stroke={COLORS.border} strokeWidth={strokeWidth} fill="none" />
-        <Circle cx={size/2} cy={size/2} r={radius} stroke={color} strokeWidth={strokeWidth} fill="none" 
-          strokeDasharray={`${circumference} ${circumference}`} strokeDashoffset={offset} 
-          strokeLinecap="round" transform={`rotate(-90 ${size/2} ${size/2})`} />
-      </Svg>
-      {showPercentage && (
-        <Text style={{ position: "absolute", fontWeight: "800", color, fontSize: size * 0.2 }}>
-          {Math.round(progress)}%
-        </Text>
-      )}
-    </View>
-  );
-};
-
-// FIXED: Enhanced DateTimePicker Component
-const CustomDateTimePicker = ({ 
-  value, 
-  onChange, 
-  mode = "date",
-  minimumDate,
-  maximumDate,
-  style 
-}) => {
-  const [show, setShow] = useState(false);
-  const [tempDate, setTempDate] = useState(value);
-
-  const onDateChange = (event, selectedDate) => {
-    setShow(false);
-    if (selectedDate) {
-      setTempDate(selectedDate);
-      onChange(selectedDate);
-    }
-  };
-
-  const showPicker = () => {
-    setShow(true);
-  };
-
-  const formatDate = (date) => {
-    if (!date) return 'Select date';
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    });
-  };
-
-  return (
-    <View>
-      <TouchableOpacity 
-        style={[styles.dateButton, style]} 
-        onPress={showPicker}
-      >
-        <Ionicons name="calendar-outline" size={18} color={COLORS.warm} />
-        <Text style={{ marginLeft: 8, color: COLORS.text }}>
-          {formatDate(value)}
-        </Text>
-      </TouchableOpacity>
-      
-      {show && (
-        <DateTimePicker
-          value={tempDate}
-          mode={mode}
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={onDateChange}
-          minimumDate={minimumDate}
-          maximumDate={maximumDate}
-          style={Platform.OS === 'ios' ? { height: 200 } : null}
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={COLORS.surfaceVariant}
+          strokeWidth={strokeWidth}
+          fill="none"
         />
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          fill="none"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          transform={`rotate(-90, ${size / 2}, ${size / 2})`}
+        />
+      </Svg>
+      {showLabel && (
+        <View style={{ position: 'absolute' }}>
+          <Text style={{ fontSize: size * 0.2, fontWeight: '700', color }}>
+            {Math.round(progress)}%
+          </Text>
+        </View>
       )}
     </View>
   );
 };
 
-const PriorityBadge = ({ priority }) => {
-  const priorityConfig = {
-    low: { color: COLORS.success, label: 'Low', icon: 'arrow-down' },
-    medium: { color: COLORS.warning, label: 'Medium', icon: 'remove' },
-    high: { color: COLORS.error, label: 'High', icon: 'arrow-up' },
-    urgent: { color: COLORS.error, label: 'Urgent', icon: 'warning' }
-  };
+/* ================================================================================
+   🏷️ CATEGORY BADGE
+   ================================================================================ */
 
-  const config = priorityConfig[priority] || priorityConfig.medium;
-
+const CategoryBadge = ({ category }) => {
+  const config = CATEGORIES[category] || CATEGORIES.other;
   return (
-    <View style={[styles.priorityBadge, { backgroundColor: config.color + '20' }]}>
+    <View style={[styles.categoryPill, { backgroundColor: config.lightColor }]}>
       <Ionicons name={config.icon} size={12} color={config.color} />
-      <Text style={[styles.priorityText, { color: config.color }]}>{config.label}</Text>
-    </View>
-  );
-};
-
-const CategoryChip = ({ category, onPress, selected = false }) => {
-  const categories = {
-    health: { label: 'Health', icon: 'fitness', color: COLORS.success },
-    work: { label: 'Work', icon: 'briefcase', color: COLORS.info },
-    education: { label: 'Education', icon: 'school', color: COLORS.warning },
-    personal: { label: 'Personal', icon: 'person', color: COLORS.blush },
-    financial: { label: 'Financial', icon: 'cash', color: COLORS.success },
-    social: { label: 'Social', icon: 'people', color: COLORS.warm },
-    other: { label: 'Other', icon: 'ellipse', color: COLORS.softText }
-  };
-
-  const config = categories[category] || categories.other;
-
-  return (
-    <TouchableOpacity 
-      style={[
-        styles.categoryChip, 
-        { backgroundColor: selected ? config.color : COLORS.card },
-        selected && { borderColor: config.color }
-      ]}
-      onPress={onPress}
-    >
-      <Ionicons 
-        name={config.icon} 
-        size={16} 
-        color={selected ? COLORS.card : config.color } 
-      />
-      <Text style={[
-        styles.categoryText,
-        { color: selected ? COLORS.card : config.color }
-      ]}>
+      <Text style={[styles.categoryPillText, { color: config.color }]}>
         {config.label}
       </Text>
-    </TouchableOpacity>
+    </View>
   );
 };
 
-const UserAvatar = ({ user, size = 28 }) => {
+/* ================================================================================
+   ⚡ PRIORITY BADGE
+   ================================================================================ */
+
+const PriorityBadge = ({ priority }) => {
+  const config = PRIORITIES[priority] || PRIORITIES.medium;
+  return (
+    <View style={[styles.priorityBadge, { backgroundColor: config.lightColor }]}>
+      <Ionicons name={config.icon} size={12} color={config.color} />
+      <Text style={[styles.priorityBadgeText, { color: config.color }]}>
+        {config.label}
+      </Text>
+    </View>
+  );
+};
+
+/* ================================================================================
+   👥 USER AVATAR
+   ================================================================================ */
+
+const UserAvatar = React.memo(({ user, size = 28 }) => {
   if (user?.photoURL) {
     return (
       <Image 
@@ -217,7 +372,7 @@ const UserAvatar = ({ user, size = 28 }) => {
         style={[
           styles.avatar,
           { width: size, height: size, borderRadius: size / 2 }
-        ]} 
+        ]}
       />
     );
   }
@@ -225,17 +380,336 @@ const UserAvatar = ({ user, size = 28 }) => {
   return (
     <View style={[
       styles.avatar, 
-      { width: size, height: size, borderRadius: size / 2, backgroundColor: COLORS.warm }
+      { 
+        width: size, 
+        height: size, 
+        borderRadius: size / 2, 
+        backgroundColor: COLORS.shared,
+        alignItems: 'center',
+        justifyContent: 'center'
+      }
     ]}>
       <Text style={{ color: "#fff", fontWeight: "700", fontSize: size * 0.4 }}>
         {(user?.displayName || user?.email || "U").charAt(0).toUpperCase()}
       </Text>
     </View>
   );
+});
+
+/* ================================================================================
+   👥 COLLABORATOR AVATARS INLINE
+   ================================================================================ */
+
+const CollaboratorAvatars = React.memo(({ collaborators, max = 3, size = 28 }) => {
+  const arr = collaborators || [];
+  const show = arr.slice(0, max);
+  const remaining = Math.max(0, arr.length - max);
+  
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center" }}>
+      {show.map((p, i) => (
+        <View key={p.uid || i} style={{ marginLeft: i === 0 ? 0 : -8 }}>
+          <UserAvatar user={p} size={size} />
+        </View>
+      ))}
+      {remaining > 0 && (
+        <View style={[
+          styles.avatar, 
+          { 
+            marginLeft: -8, 
+            backgroundColor: COLORS.sharedLight,
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            alignItems: 'center',
+            justifyContent: 'center'
+          }
+        ]}>
+          <Text style={{ color: COLORS.shared, fontSize: size * 0.3, fontWeight: '700' }}>
+            +{remaining}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+});
+
+/* ================================================================================
+   🎯 SHARED GOAL CARD - REMOVED add milestone section
+   ================================================================================ */
+
+const SharedGoalCard = ({ 
+  goal, 
+  onPress, 
+  onEdit, 
+  onDelete, 
+  onAddProgress,
+  onToggleMilestone,
+  isExpanded,
+  onExpand,
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const expandAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
+  
+  const category = CATEGORIES[goal.category] || CATEGORIES.other;
+  const priority = PRIORITIES[goal.priority] || PRIORITIES.medium;
+  
+  const dueDate = new Date(goal.dueDate);
+  const now = new Date();
+  const daysUntil = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
+  const isOverdue = daysUntil < 0 && goal.progress < 100;
+  const isDueSoon = daysUntil >= 0 && daysUntil <= 3 && goal.progress < 100;
+  const completedMilestones = goal.milestones?.filter(m => m.completed).length || 0;
+  const totalMilestones = goal.milestones?.length || 0;
+  
+  useEffect(() => {
+    Animated.timing(expandAnim, {
+      toValue: isExpanded ? 1 : 0,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [isExpanded]);
+  
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.98,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
+  };
+  
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
+  };
+  
+  const getDueLabel = () => {
+    if (goal.progress === 100) return "Completed";
+    if (isOverdue) return `${Math.abs(daysUntil)} days overdue`;
+    if (daysUntil === 0) return "Today";
+    if (daysUntil === 1) return "Tomorrow";
+    return `${daysUntil} days left`;
+  };
+  
+  const getDueColor = () => {
+    if (goal.progress === 100) return COLORS.success;
+    if (isOverdue) return COLORS.danger;
+    if (isDueSoon) return COLORS.warning;
+    return COLORS.textSecondary;
+  };
+
+  const [progressValue, setProgressValue] = useState("");
+  
+  return (
+    <Animated.View 
+      style={[
+        styles.goalCard,
+        {
+          transform: [{ scale: scaleAnim }],
+          borderColor: isOverdue ? COLORS.danger + '40' : 
+                      isDueSoon ? COLORS.warning + '40' : 
+                      COLORS.cardBorder,
+        }
+      ]}
+    >
+      <BlurView intensity={90} tint="light" style={styles.goalCardBlur}>
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          onPress={() => onPress(goal)} // ✅ Opens detail modal, NOT edit
+          onLongPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            onEdit(goal);
+          }}
+          delayLongPress={500}
+        >
+          <View style={styles.goalCardHeader}>
+            <View style={[styles.goalAccent, { backgroundColor: COLORS.shared }]} />
+            
+            <View style={styles.goalContent}>
+              <View style={styles.goalTopRow}>
+                <View style={styles.goalTitleContainer}>
+                  <Text style={styles.goalTitle} numberOfLines={1}>
+                    {goal.title}
+                  </Text>
+                  <View style={styles.goalBadges}>
+                    <PriorityBadge priority={goal.priority} />
+                    <CategoryBadge category={goal.category} />
+                  </View>
+                </View>
+                
+                <ProgressRing progress={goal.progress} size={52} />
+              </View>
+              
+              {goal.description ? (
+                <Text style={styles.goalDescription} numberOfLines={2}>
+                  {goal.description}
+                </Text>
+              ) : null}
+              
+              <View style={styles.goalMetaRow}>
+                <View style={[styles.dueBadge, { backgroundColor: getDueColor() + '15' }]}>
+                  <Ionicons 
+                    name={goal.progress === 100 ? "checkmark-circle" : isOverdue ? "alert-circle" : "calendar-outline"} 
+                    size={14} 
+                    color={getDueColor()} 
+                  />
+                  <Text style={[styles.dueText, { color: getDueColor() }]}>
+                    {getDueLabel()}
+                  </Text>
+                </View>
+                
+                {totalMilestones > 0 && (
+                  <View style={styles.milestoneBadge}>
+                    <Ionicons name="flag-outline" size={14} color={COLORS.textSecondary} />
+                    <Text style={styles.milestoneBadgeText}>
+                      {completedMilestones}/{totalMilestones}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              
+              {goal.participantDetails?.length > 0 && (
+                <View style={styles.collaboratorRow}>
+                  <CollaboratorAvatars collaborators={goal.participantDetails} max={4} size={28} />
+                  <Text style={styles.collaboratorText}>
+                    {goal.participantDetails.length} {goal.participantDetails.length === 1 ? 'member' : 'members'}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        </TouchableOpacity>
+        
+        {/* ✅ REMOVED: Add milestone section from expanded card */}
+        <Animated.View 
+          style={[
+            styles.expandedContent,
+            {
+              maxHeight: expandAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 200],
+              }),
+              opacity: expandAnim,
+            }
+          ]}
+        >
+          <View style={styles.divider} />
+          
+          {/* Quick Progress Update */}
+          <View style={styles.expandedSection}>
+            <View style={styles.progressInputRow}>
+              <TextInput
+                style={styles.progressInput}
+                placeholder="Add progress..."
+                placeholderTextColor={COLORS.placeholder}
+                value={progressValue}
+                onChangeText={setProgressValue}
+                keyboardType="numeric"
+              />
+              <TouchableOpacity
+                style={styles.progressButton}
+                onPress={() => {
+                  const value = parseInt(progressValue);
+                  if (value > 0) {
+                    onAddProgress(goal.id, value);
+                    setProgressValue("");
+                  }
+                }}
+              >
+                <LinearGradient
+                  colors={[COLORS.shared, COLORS.accentBlush]}
+                  style={styles.progressButtonGradient}
+                >
+                  <Ionicons name="add" size={18} color="white" />
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+          
+          {/* Milestones Summary */}
+          {totalMilestones > 0 && (
+            <View style={styles.expandedSection}>
+              <View style={styles.milestonesHeader}>
+                <Text style={styles.milestonesTitle}>Milestones</Text>
+                <Text style={styles.milestonesCount}>
+                  {completedMilestones}/{totalMilestones}
+                </Text>
+              </View>
+              <View style={styles.milestoneBar}>
+                <View 
+                  style={[
+                    styles.milestoneBarFill,
+                    { width: `${(completedMilestones / totalMilestones) * 100}%` }
+                  ]} 
+                />
+              </View>
+              <TouchableOpacity 
+                style={styles.viewAllMilestonesButton}
+                onPress={() => onPress(goal)}
+              >
+                <Text style={styles.viewAllMilestonesText}>View all in details</Text>
+                <Ionicons name="arrow-forward" size={14} color={COLORS.shared} />
+              </TouchableOpacity>
+            </View>
+          )}
+          
+          {totalMilestones === 0 && (
+            <View style={styles.expandedSection}>
+              <View style={styles.emptyMilestones}>
+                <Ionicons name="flag-outline" size={24} color={COLORS.textTertiary} />
+                <Text style={styles.emptyMilestonesText}>
+                  No milestones yet
+                </Text>
+                <TouchableOpacity 
+                  style={styles.addMilestoneHintButton}
+                  onPress={() => onPress(goal)}
+                >
+                  <Text style={styles.addMilestoneHintText}>Add in details</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </Animated.View>
+        
+        <View style={styles.goalActions}>
+          {goal.isOwner && (
+            <TouchableOpacity 
+              onPress={() => onEdit(goal)} 
+              style={styles.actionButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="create-outline" size={20} color={COLORS.textSecondary} />
+            </TouchableOpacity>
+          )}
+          
+          <TouchableOpacity 
+            onPress={() => onDelete(goal)} 
+            style={[styles.actionButton, styles.deleteButton]}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons 
+              name={goal.isOwner ? "trash-outline" : "close-outline"} 
+              size={20} 
+              color={goal.isOwner ? COLORS.danger : COLORS.textSecondary} 
+            />
+          </TouchableOpacity>
+        </View>
+      </BlurView>
+    </Animated.View>
+  );
 };
 
-/* -------------------- Fixed Notification Center Component -------------------- */
-const NotificationCenter = () => {
+/* ================================================================================
+   📱 NOTIFICATION CENTER
+   ================================================================================ */
+
+const NotificationCenter = React.memo(() => {
   const { user } = useApp();
   const [notifications, setNotifications] = useState([]);
   const [notificationVisible, setNotificationVisible] = useState(false);
@@ -244,53 +718,31 @@ const NotificationCenter = () => {
   useEffect(() => {
     if (!user?.uid) return;
     
-    const userRef = doc(db, "users", user.uid);
-    const unsub = onSnapshot(userRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        // FIX: Handle both array and object formats
-        const notificationsData = data.notifications || [];
-        setNotifications(Array.isArray(notificationsData) ? notificationsData : []);
-      }
+    const unsubscribe = setupNotificationListener(user.uid, (receivedNotifications) => {
+      setNotifications(receivedNotifications || []);
     });
-
-    return () => unsub();
+    
+    return () => {
+      if (unsubscribe && typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
   }, [user]);
 
   const markAsRead = async (notificationId) => {
+    if (!user?.uid || !notificationId) return;
     try {
-      const userRef = doc(db, "users", user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        const updatedNotifications = (userData.notifications || []).map(n => 
-          n.id === notificationId ? { ...n, read: true } : n
-        );
-        
-        await updateDoc(userRef, {
-          notifications: updatedNotifications
-        });
-      }
+      await markNotificationAsRead(user.uid, notificationId);
     } catch (error) {
       console.error("Error marking notification as read:", error);
     }
   };
 
   const markAllAsRead = async () => {
+    if (!user?.uid) return;
     try {
       setLoading(true);
-      const userRef = doc(db, "users", user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        const updatedNotifications = (userData.notifications || []).map(n => ({ ...n, read: true }));
-        
-        await updateDoc(userRef, {
-          notifications: updatedNotifications
-        });
-      }
+      await markAllNotificationsAsRead(user.uid);
     } catch (error) {
       console.error("Error marking all as read:", error);
     } finally {
@@ -298,56 +750,31 @@ const NotificationCenter = () => {
     }
   };
 
-  const clearAllNotifications = async () => {
-    try {
-      setLoading(true);
-      const userRef = doc(db, "users", user.uid);
-      
-      await updateDoc(userRef, {
-        notifications: []
-      });
-      
-      Alert.alert("Success", "All notifications have been cleared.");
-    } catch (error) {
-      console.error("Error clearing all notifications:", error);
-      Alert.alert("Error", "Failed to clear notifications");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const unreadCount = useMemo(() => 
+    notifications.filter(n => n && !n.read).length, 
+    [notifications]
+  );
 
-  // FIX: Calculate unread count properly
-  const unreadCount = notifications.filter(n => n && !n.read).length;
-
-  const formatNotificationTime = (timestamp) => {
-    if (!timestamp) return '';
+  const renderNotificationIcon = (type) => {
+    const iconConfig = {
+      goal_invite: { icon: 'person-add', color: COLORS.shared },
+      progress_update: { icon: 'trending-up', color: COLORS.success },
+      milestone_completed: { icon: 'trophy', color: COLORS.warning },
+      goal_joined: { icon: 'people', color: COLORS.info },
+      goal_completed: { icon: 'checkmark-done', color: COLORS.success },
+      comment: { icon: 'chatbubble', color: COLORS.accentBlush },
+      goal_updated: { icon: 'create', color: COLORS.info },
+      participant_removed: { icon: 'person-remove', color: COLORS.error },
+      goal_deleted: { icon: 'trash', color: COLORS.error }
+    };
     
-    let date;
-    if (timestamp.seconds) {
-      date = new Date(timestamp.seconds * 1000);
-    } else if (timestamp instanceof Date) {
-      date = timestamp;
-    } else if (typeof timestamp === 'string') {
-      date = new Date(timestamp);
-    } else {
-      date = new Date();
-    }
-
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
+    const config = iconConfig[type] || { icon: 'notifications', color: COLORS.textSecondary };
     
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric' 
-    });
+    return (
+      <View style={[styles.notificationIconCircle, { backgroundColor: config.color + '20' }]}>
+        <Ionicons name={config.icon} size={20} color={config.color} />
+      </View>
+    );
   };
 
   return (
@@ -356,7 +783,7 @@ const NotificationCenter = () => {
         style={styles.notificationButton}
         onPress={() => setNotificationVisible(true)}
       >
-        <Ionicons name="notifications-outline" size={24} color={COLORS.text} />
+        <Ionicons name="notifications-outline" size={24} color={COLORS.textPrimary} />
         {unreadCount > 0 && (
           <View style={styles.notificationBadge}>
             <Text style={styles.notificationBadgeText}>
@@ -372,924 +799,280 @@ const NotificationCenter = () => {
         transparent={false}
         onRequestClose={() => setNotificationVisible(false)}
       >
-        <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }}>
-          <View style={styles.notificationHeader}>
-            <View>
-              <Text style={styles.notificationTitle}>Notifications</Text>
-              {unreadCount > 0 && (
-                <Text style={styles.notificationSubtitle}>
-                  {unreadCount} unread {unreadCount === 1 ? 'notification' : 'notifications'}
-                </Text>
-              )}
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-              {notifications.length > 0 && (
-                <TouchableOpacity onPress={clearAllNotifications} disabled={loading}>
-                  <Text style={styles.markAllReadText}>Clear All</Text>
+        <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.backgroundBase }}>
+          <LinearGradient
+            colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+            style={styles.notificationHeaderGradient}
+          >
+            <View style={styles.notificationHeader}>
+              <View>
+                <Text style={styles.notificationTitle}>Notifications</Text>
+                {unreadCount > 0 && (
+                  <Text style={styles.notificationSubtitle}>
+                    {unreadCount} unread
+                  </Text>
+                )}
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+                {unreadCount > 0 && (
+                  <TouchableOpacity onPress={markAllAsRead} disabled={loading}>
+                    <Text style={styles.markAllReadText}>Mark all read</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={() => setNotificationVisible(false)}>
+                  <Ionicons name="close" size={24} color={COLORS.textPrimary} />
                 </TouchableOpacity>
-              )}
-              {unreadCount > 0 && (
-                <TouchableOpacity onPress={markAllAsRead} disabled={loading}>
-                  <Text style={styles.markAllReadText}>Mark all read</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity onPress={() => setNotificationVisible(false)}>
-                <Ionicons name="close" size={24} color={COLORS.text} />
-              </TouchableOpacity>
+              </View>
             </View>
-          </View>
+          </LinearGradient>
 
           <FlatList
             data={[...notifications].sort((a, b) => {
-              const dateA = a.timestamp ? (a.timestamp.seconds ? new Date(a.timestamp.seconds * 1000) : new Date(a.timestamp)) : new Date(0);
-              const dateB = b.timestamp ? (b.timestamp.seconds ? new Date(b.timestamp.seconds * 1000) : new Date(b.timestamp)) : new Date(0);
+              const dateA = a.timestamp?.seconds ? new Date(a.timestamp.seconds * 1000) : new Date(a.timestamp || 0);
+              const dateB = b.timestamp?.seconds ? new Date(b.timestamp.seconds * 1000) : new Date(b.timestamp || 0);
               return dateB - dateA;
             })}
-            keyExtractor={(item, index) => item.id || `notification-${index}`}
+            keyExtractor={(item, index) => item?.id || `notification-${index}`}
             renderItem={({ item }) => (
               <TouchableOpacity
                 style={[
                   styles.notificationItem,
-                  item && !item.read && styles.notificationItemUnread
+                  !item.read && styles.notificationItemUnread
                 ]}
-                onPress={() => item && item.id && markAsRead(item.id)}
+                onPress={() => item.id && markAsRead(item.id)}
               >
-                <View style={styles.notificationIcon}>
-                  {item?.type === "goal_invite" && (
-                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.warm + '20' }]}>
-                      <Ionicons name="person-add" size={20} color={COLORS.warm} />
-                    </View>
-                  )}
-                  {item?.type === "progress_update" && (
-                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.success + '20' }]}>
-                      <Ionicons name="trending-up" size={20} color={COLORS.success} />
-                    </View>
-                  )}
-                  {item?.type === "milestone_completed" && (
-                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.warning + '20' }]}>
-                      <Ionicons name="trophy" size={20} color={COLORS.warning} />
-                    </View>
-                  )}
-                  {item?.type === "goal_joined" && (
-                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.info + '20' }]}>
-                      <Ionicons name="people" size={20} color={COLORS.info} />
-                    </View>
-                  )}
-                  {item?.type === "goal_completed" && (
-                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.success + '20' }]}>
-                      <Ionicons name="checkmark-done" size={20} color={COLORS.success} />
-                    </View>
-                  )}
-                  {!item?.type && (
-                    <View style={[styles.notificationIconCircle, { backgroundColor: COLORS.softText + '20' }]}>
-                      <Ionicons name="notifications" size={20} color={COLORS.softText} />
-                    </View>
-                  )}
-                </View>
+                {renderNotificationIcon(item.type)}
                 <View style={styles.notificationContent}>
-                  <Text style={styles.notificationMessage}>{item?.message || 'Notification'}</Text>
+                  <Text style={styles.notificationMessage} numberOfLines={2}>
+                    {item.message || 'Notification'}
+                  </Text>
                   <Text style={styles.notificationTime}>
-                    {formatNotificationTime(item?.timestamp)}
+                    {formatRelativeTime(item.timestamp)}
                   </Text>
                 </View>
-                {item && !item.read && <View style={styles.notificationDot} />}
+                {!item.read && <View style={styles.notificationDot} />}
               </TouchableOpacity>
             )}
             ListEmptyComponent={
               <View style={styles.emptyNotifications}>
-                <Ionicons name="notifications-off-outline" size={64} color={COLORS.border} />
-                <Text style={styles.emptyNotificationText}>No notifications yet</Text>
+                <Ionicons name="notifications-off-outline" size={64} color={COLORS.textTertiary} />
+                <Text style={styles.emptyNotificationText}>No notifications</Text>
                 <Text style={styles.emptyNotificationSubtext}>
-                  When you get invited to goals or someone makes progress, you'll see it here!
+                  When you get invited to goals or someone makes progress, you'll see it here
                 </Text>
               </View>
             }
+            contentContainerStyle={notifications.length === 0 ? { flex: 1 } : { paddingBottom: 20 }}
           />
         </SafeAreaView>
       </Modal>
     </>
   );
+});
+
+/* ================================================================================
+   🎯 QUICK ADD BAR
+   ================================================================================ */
+
+const QuickAddBar = ({ onAdd }) => {
+  const [text, setText] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(scaleAnim, {
+      toValue: isFocused ? 1.02 : 1,
+      useNativeDriver: true,
+      friction: 8,
+    }).start();
+  }, [isFocused]);
+
+  const handleSubmit = () => {
+    if (text.trim()) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      onAdd({
+        title: text.trim(),
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+      setText("");
+    }
+  };
+
+  return (
+    <Animated.View style={[styles.quickAddContainer, { transform: [{ scale: scaleAnim }] }]}>
+      <BlurView intensity={90} tint="light" style={styles.quickAddBlur}>
+        <View style={styles.quickAddInner}>
+          <Ionicons name="people-outline" size={24} color={COLORS.shared} />
+          
+          <TextInput
+            style={styles.quickAddInput}
+            placeholder="Quick add shared goal..."
+            placeholderTextColor={COLORS.placeholder}
+            value={text}
+            onChangeText={setText}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            onSubmitEditing={handleSubmit}
+            returnKeyType="done"
+            maxLength={120}
+          />
+          
+          {text.length > 0 && (
+            <TouchableOpacity onPress={handleSubmit} style={styles.quickAddSubmit}>
+              <LinearGradient
+                colors={[COLORS.shared, COLORS.accentBlush]}
+                style={styles.quickAddSubmitGradient}
+              >
+                <Ionicons name="arrow-forward" size={20} color="white" />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
+        </View>
+      </BlurView>
+    </Animated.View>
+  );
 };
 
-/* -------------------- Screen -------------------- */
-export default function SharedGoalsScreen() {
-  const { user, appId } = useApp();
-  const path = getSharedGoalsCollectionPath(appId);
+/* ================================================================================
+   📋 SHARED GOAL DETAIL MODAL - All functionality preserved
+   ================================================================================ */
 
-  // Main state
-  const [goals, setGoals] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [isOffline, setIsOffline] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-
-  // Create modal
-  const [createVisible, setCreateVisible] = useState(false);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [dueDate, setDueDate] = useState(new Date());
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [targetValue, setTargetValue] = useState("");
-  const [unit, setUnit] = useState("");
-  const [priority, setPriority] = useState("medium");
-  const [category, setCategory] = useState("other");
-
-  // Collaborators
-  const [collabEmail, setCollabEmail] = useState("");
-  const [collaborators, setCollaborators] = useState([]);
-  const [collabLoading, setCollabLoading] = useState(false);
-
-  // Detail & Edit
-  const [detailVisible, setDetailVisible] = useState(false);
-  const [selectedGoal, setSelectedGoal] = useState(null);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editDueDate, setEditDueDate] = useState(new Date());
-  const [editTargetValue, setEditTargetValue] = useState("");
-  const [editUnit, setEditUnit] = useState("");
-  const [editPriority, setEditPriority] = useState("medium");
-  const [editCategory, setEditCategory] = useState("other");
-
-  // Enhanced states
-  const [commentInput, setCommentInput] = useState("");
-  const [progressInput, setProgressInput] = useState("");
-  const [milestoneInput, setMilestoneInput] = useState("");
-  const [milestoneDueDate, setMilestoneDueDate] = useState(null);
+const SharedGoalDetailModal = ({
+  visible,
+  onClose,
+  goal,
+  user,
+  path,
+  onAddProgress,
+  onAddComment,
+  onAddMilestone,
+  onToggleMilestone,
+  onEditGoal,
+  onDeleteGoal,
+  onAddCollaborator,
+  onRemoveParticipant,
+  canManageRoles,
+}) => {
   const [activeTab, setActiveTab] = useState('overview');
-  const [optimisticComments, setOptimisticComments] = useState([]);
-  const [optimisticMilestones, setOptimisticMilestones] = useState([]);
-  const [editCollabEmail, setEditCollabEmail] = useState("");
+  const [commentInput, setCommentInput] = useState('');
+  const [progressInput, setProgressInput] = useState('');
+  const [milestoneInput, setMilestoneInput] = useState('');
+  const [milestoneDueDate, setMilestoneDueDate] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
   const [editCollabLoading, setEditCollabLoading] = useState(false);
-
-  // Add state for real-time goal updates
-  const [goalRealTimeData, setGoalRealTimeData] = useState(null);
   const [comments, setComments] = useState([]);
   const [milestones, setMilestones] = useState([]);
+  const [optimisticComments, setOptimisticComments] = useState([]);
+  const [optimisticMilestones, setOptimisticMilestones] = useState([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteError, setInviteError] = useState('');
+  
+  // Date picker states
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [tempDate, setTempDate] = useState(new Date());
 
-  // Push Notification Setup
-  const [notificationPermission, setNotificationPermission] = useState(false);
-  const notificationListener = useRef();
-  const responseListener = useRef();
+  const [editForm, setEditForm] = useState({
+    title: goal?.title || '',
+    description: goal?.description || '',
+    dueDate: goal?.dueDate ? (goal.dueDate.seconds ? new Date(goal.dueDate.seconds * 1000) : new Date(goal.dueDate)) : new Date(),
+    targetValue: goal?.targetValue?.toString() || '',
+    unit: goal?.unit || '',
+    priority: goal?.priority || 'medium',
+    category: goal?.category || 'social',
+    collabEmail: ''
+  });
 
-  const animValues = useRef({});
   const slideAnim = useRef(new Animated.Value(0)).current;
   const commentInputRef = useRef(null);
 
-  /* -------------------- FIXED: Enhanced Helpers -------------------- */
-  const computeProgress = (goal) => {
-    if (!goal) return 0;
-    
-    // FIX: Handle both target-based and milestone-based progress
-    if (goal.targetValue && goal.targetValue > 0) {
-      const current = goal.currentValue || 0;
-      const progress = (current / goal.targetValue) * 100;
-      return Math.min(Math.round(progress * 10) / 10, 100); // Keep 1 decimal
-    }
-    
-    const milestones = goal.milestones || [];
-    if (!milestones.length) return 0;
-    
-    const completedMilestones = milestones.filter(m => m && m.completed).length;
-    const progress = (completedMilestones / milestones.length) * 100;
-    return Math.round(progress);
-  };
-
-  const formatDate = (date) => {
-    if (!date) return 'No deadline';
-    const d = date.seconds ? new Date(date.seconds * 1000) : new Date(date);
-    return d.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric' 
-    });
-  };
-
-  const formatCommentDate = (timestamp) => {
-    if (!timestamp) return '';
-    
-    let date;
-    if (timestamp.seconds) {
-      date = new Date(timestamp.seconds * 1000);
-    } else if (timestamp instanceof Date) {
-      date = timestamp;
-    } else {
-      date = new Date(timestamp);
-    }
-
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric' 
-    });
-  };
-
-  const getDaysRemaining = (dueDate) => {
-    if (!dueDate) return null;
-    const due = dueDate.seconds ? new Date(dueDate.seconds * 1000) : new Date(dueDate);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const diffTime = due - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
-  };
-
-  const getCategoryIcon = (category) => {
-    const icons = {
-      health: 'fitness',
-      work: 'briefcase',
-      education: 'school',
-      personal: 'person',
-      financial: 'cash',
-      social: 'people',
-      other: 'ellipse'
-    };
-    return icons[category] || 'ellipse';
-  };
-
-  /* -------------------- Enhanced Notification Functions -------------------- */
-  const sendEnhancedGoalInvite = async (goal, newParticipant, inviter) => {
-    try {
-      // FIX: Added null checks for notification function
-      if (!sendNotification) {
-        console.warn("sendNotification function not available");
-        return false;
-      }
-
-      // Notification to the new participant
-      await sendNotification(
-        [newParticipant.uid],
-        `${inviter.displayName || inviter.email} invited you to join "${goal.title}"`,
-        { 
-          goalId: goal.id,
-          goalTitle: goal.title,
-          inviterId: inviter.uid,
-          inviterName: inviter.displayName || inviter.email
-        },
-        {
-          type: NOTIFICATION_TYPES.GOAL_INVITE,
-          priority: "high",
-          actionRequired: true,
-          pushTitle: '🎯 New Goal Invitation',
-          pushBody: `${inviter.displayName || inviter.email} invited you to join "${goal.title}"`,
-          sendPush: notificationPermission,
-        }
-      );
-
-      // Notification to existing participants (excluding inviter)
-      const existingParticipants = (goal.participants || []).filter(uid => 
-        uid && uid !== inviter.uid && uid !== newParticipant.uid
-      );
-      
-      if (existingParticipants.length > 0) {
-        await sendNotification(
-          existingParticipants,
-          `${newParticipant.displayName} joined "${goal.title}"`,
-          { 
-            goalId: goal.id,
-            goalTitle: goal.title,
-            newMemberId: newParticipant.uid,
-            newMemberName: newParticipant.displayName
-          },
-          {
-            type: NOTIFICATION_TYPES.GOAL_JOINED,
-            priority: "normal",
-            pushTitle: '👋 New Member',
-            pushBody: `${newParticipant.displayName} joined "${goal.title}"`,
-            sendPush: notificationPermission,
-          }
-        );
-      }
-
-      // Send a welcome message in comments
-      const welcomeComment = {
-        authorId: "system",
-        authorName: "System",
-        text: `🎉 Welcome ${newParticipant.displayName} to this goal!`,
-        timestamp: new Date(),
-        isSystemMessage: true
-      };
-
-      await updateDoc(doc(db, path, goal.id), {
-        comments: arrayUnion(welcomeComment),
-        updatedAt: serverTimestamp(),
+  useEffect(() => {
+    if (goal) {
+      setEditForm({
+        title: goal.title || '',
+        description: goal.description || '',
+        dueDate: goal.dueDate ? (goal.dueDate.seconds ? new Date(goal.dueDate.seconds * 1000) : new Date(goal.dueDate)) : new Date(),
+        targetValue: goal.targetValue?.toString() || '',
+        unit: goal.unit || '',
+        priority: goal.priority || 'medium',
+        category: goal.category || 'social',
+        collabEmail: ''
       });
-
-      return true;
-    } catch (error) {
-      console.error("Error sending enhanced goal invite:", error);
-      return false;
+      setComments(goal.comments ? [...goal.comments].reverse() : []);
+      setMilestones(goal.milestones || []);
     }
+  }, [goal]);
+
+  const progress = useMemo(() => computeProgress(goal), [goal]);
+  const daysRemaining = useMemo(() => getDaysRemaining(goal?.dueDate), [goal?.dueDate]);
+  const isOverdue = daysRemaining !== null && daysRemaining < 0;
+  const isDueSoon = daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 3;
+  const completedMilestones = goal?.milestones?.filter(m => m.completed).length || 0;
+  const totalMilestones = goal?.milestones?.length || 0;
+
+  const handleEditToggle = () => {
+    setIsEditing(!isEditing);
+    Animated.timing(slideAnim, {
+      toValue: isEditing ? 0 : 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
   };
 
-  const sendProgressCelebration = async (goal, addedValue, contributor) => {
-    try {
-      if (!sendNotification) {
-        console.warn("sendNotification function not available");
-        return false;
-      }
-
-      const progressPercentage = computeProgress(goal);
-      
-      // Send notifications for milestone achievements
-      if (progressPercentage >= 100) {
-        await sendNotification(
-          goal.participants.filter(id => id !== user?.uid) || [],
-          `🎉 Goal "${goal.title}" has been 100% completed! Congratulations everyone!`,
-          { 
-            goalId: goal.id,
-            goalTitle: goal.title
-          },
-          {
-            type: NOTIFICATION_TYPES.GOAL_COMPLETED,
-            priority: "high",
-            pushTitle: '🎉 Goal Completed!',
-            pushBody: `"${goal.title}" is 100% complete!`,
-            sendPush: notificationPermission,
-          }
-        );
-      } else if (progressPercentage >= 75) {
-        await sendNotification(
-          goal.participants.filter(id => id !== user?.uid) || [],
-          `🔥 You're 75% of the way to completing "${goal.title}"! Keep going!`,
-          { 
-            goalId: goal.id,
-            goalTitle: goal.title,
-            milestone: "75%"
-          },
-          {
-            type: NOTIFICATION_TYPES.GOAL_MILESTONE_REACHED,
-            pushTitle: '🔥 75% Complete!',
-            pushBody: `"${goal.title}" is almost there!`,
-            sendPush: notificationPermission,
-          }
-        );
-      } else if (progressPercentage >= 50) {
-        await sendNotification(
-          goal.participants.filter(id => id !== user?.uid) || [],
-          `✨ Halfway there! "${goal.title}" is 50% complete.`,
-          { 
-            goalId: goal.id,
-            goalTitle: goal.title,
-            milestone: "50%"
-          },
-          {
-            type: NOTIFICATION_TYPES.GOAL_MILESTONE_REACHED,
-            pushTitle: '✨ Halfway There!',
-            pushBody: `"${goal.title}" is 50% complete`,
-            sendPush: notificationPermission,
-          }
-        );
-      }
-
-      // Send progress update to all participants (excluding contributor)
-      const otherParticipants = (goal.participants || []).filter(uid => uid !== contributor.uid);
-      
-      if (otherParticipants.length > 0) {
-        await sendNotification(
-          otherParticipants,
-          `${contributor.displayName} added ${addedValue} ${goal.unit || ""} to "${goal.title}"`,
-          { 
-            goalId: goal.id,
-            goalTitle: goal.title,
-            addedValue,
-            unit: goal.unit,
-            contributorId: contributor.uid,
-            contributorName: contributor.displayName
-          },
-          {
-            type: NOTIFICATION_TYPES.PROGRESS_UPDATE,
-            pushTitle: '📈 Progress Update',
-            pushBody: `${contributor.displayName} updated "${goal.title}"`,
-            sendPush: notificationPermission,
-          }
-        );
-      }
-
-      return true;
-    } catch (error) {
-      console.error("Error sending progress celebration:", error);
-      return false;
-    }
-  };
-
-  const sendMilestoneNotification = async (goal, milestone, action, actor) => {
-    try {
-      if (!sendNotification) {
-        console.warn("sendNotification function not available");
-        return false;
-      }
-
-      const actionText = action === "completed" ? "completed" : "added";
-      const emoji = action === "completed" ? "🏆" : "🎯";
-      
-      await sendNotification(
-        goal.participants.filter(id => id !== actor.uid) || [],
-        `${emoji} ${actor.displayName} ${actionText} milestone: "${milestone.title}"`,
-        { 
-          goalId: goal.id,
-          goalTitle: goal.title,
-          milestoneTitle: milestone.title,
-          milestoneIndex: milestone.index,
-          actorId: actor.uid,
-          actorName: actor.displayName
-        },
-        {
-          type: action === "completed" ? NOTIFICATION_TYPES.MILESTONE_COMPLETED : NOTIFICATION_TYPES.MILESTONE_ADDED,
-          pushTitle: action === "completed" ? '🏆 Milestone Completed!' : '🎯 New Milestone',
-          pushBody: `${actor.displayName} ${actionText} "${milestone.title}"`,
-          sendPush: notificationPermission,
-        }
-      );
-
-      return true;
-    } catch (error) {
-      console.error("Error sending milestone notification:", error);
-      return false;
-    }
-  };
-
-  const sendGoalUpdateNotification = async (goal, updater, changes) => {
-    try {
-      if (!sendNotification) {
-        console.warn("sendNotification function not available");
-        return false;
-      }
-
-      const otherParticipants = (goal.participants || []).filter(uid => uid !== updater.uid);
-      
-      if (otherParticipants.length > 0) {
-        let changeMessage = "";
-        if (changes.title) {
-          changeMessage = `renamed the goal to "${changes.title}"`;
-        } else if (changes.dueDate) {
-          changeMessage = "updated the deadline";
-        } else if (changes.priority) {
-          changeMessage = `changed priority to ${changes.priority}`;
-        } else {
-          changeMessage = "updated the goal details";
-        }
-
-        await sendNotification(
-          otherParticipants,
-          `✏️ ${updater.displayName} ${changeMessage}`,
-          { 
-            goalId: goal.id,
-            goalTitle: goal.title,
-            updaterId: updater.uid,
-            updaterName: updater.displayName,
-            changes
-          },
-          {
-            type: NOTIFICATION_TYPES.GOAL_UPDATED,
-            pushTitle: '✏️ Goal Updated',
-            pushBody: `${updater.displayName} ${changeMessage}`,
-            sendPush: notificationPermission,
-          }
-        );
-      }
-
-      return true;
-    } catch (error) {
-      console.error("Error sending goal update notification:", error);
-      return false;
-    }
-  };
-
-  /* -------------------- Network & Data -------------------- */
-  useEffect(() => {
-    const unsub = NetInfo.addEventListener((state) => {
-      setIsOffline(!state.isConnected);
-    });
-    NetInfo.fetch().then((s) => setIsOffline(!s.isConnected));
-    return () => unsub();
-  }, []);
-
-  // Initialize Push Notifications
-  useEffect(() => {
-    const initializePushNotifications = async () => {
-      try {
-        console.log('🔔 Initializing push notifications...');
-        
-        // Configure notification handler
-        configureNotificationHandler();
-        
-        // Request permissions
-        const hasPermission = await requestNotificationPermissions();
-        setNotificationPermission(hasPermission);
-        
-        if (hasPermission) {
-          console.log('✅ Notification permissions granted');
-          
-          // Setup notification handlers
-          notificationListener.current = setupNotificationReceivedHandler();
-          responseListener.current = setupNotificationResponseHandler();
-        } else {
-          console.warn('⚠️ Notification permissions denied');
-        }
-      } catch (error) {
-        console.error('❌ Error initializing push notifications:', error);
-      }
-    };
-
-    initializePushNotifications();
-
-    // Cleanup
-    return () => {
-      if (notificationListener.current) {
-        notificationListener.current.remove();
-      }
-      if (responseListener.current) {
-        responseListener.current.remove();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!user?.uid) return;
-    setLoading(true);
-    
-    // Filter goals where current user is a participant
-    const colRef = collection(db, path);
-    const q = query(colRef, where("participants", "array-contains", user.uid));
-
-    const unsub = onSnapshot(
-      q,
-      async (snap) => {
-        try {
-          const list = await Promise.all(
-            snap.docs.map(async (d) => {
-              const data = d.data();
-              const hasPending = !!d.metadata?.hasPendingWrites;
-
-              if (!data.participantDetails && data.participants) {
-                const details = await Promise.all(
-                  (data.participants || []).map(async (uid) => {
-                    try {
-                      const ud = await getDoc(doc(db, "users", uid));
-                      if (ud.exists()) {
-                        const u = ud.data();
-                        return {
-                          uid: ud.id,
-                          displayName: u.displayName || u.username || u.email,
-                          email: u.email,
-                          photoURL: u.photoURL || null,
-                          role: (data.roles || {})[ud.id] || "member",
-                        };
-                      }
-                    } catch (e) {
-                      console.warn("Error fetching user details:", e);
-                    }
-                    return {
-                      uid,
-                      displayName: uid.slice(0, 6),
-                      email: "",
-                      photoURL: null,
-                      role: (data.roles || {})[uid] || "member",
-                    };
-                  })
-                );
-                data.participantDetails = details;
-              }
-
-              // FIX: Calculate progress using helper function
-              const prog = computeProgress(data);
-              const daysRemaining = getDaysRemaining(data.dueDate);
-
-              return { 
-                id: d.id, 
-                ...data, 
-                progress: prog, 
-                daysRemaining,
-                _hasPending: hasPending 
-              };
-            })
-          );
-
-          setGoals(list);
-        } catch (error) {
-          console.error("Error processing goals:", error);
-        } finally {
-          setLoading(false);
-          setRefreshing(false);
-        }
-      },
-      (err) => {
-        console.warn("Shared goals snapshot error:", err);
-        setLoading(false);
-        setRefreshing(false);
-      }
-    );
-
-    return () => unsub();
-  }, [user, appId]);
-
-  /* -------------------- Real-time Goal Updates -------------------- */
-  useEffect(() => {
-    if (!selectedGoal?.id) return;
-
-    const goalRef = doc(db, path, selectedGoal.id);
-    const unsub = onSnapshot(goalRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setGoalRealTimeData(data);
-        
-        // Update comments and milestones from real-time data
-        if (data.comments) {
-          setComments([...data.comments].reverse()); // Show newest first
-        }
-        if (data.milestones) {
-          setMilestones(data.milestones);
-        }
-        
-        // Also update the selected goal with latest data
-        const prog = computeProgress(data);
-        const daysRemaining = getDaysRemaining(data.dueDate);
-        
-        setSelectedGoal(prev => prev ? {
-          ...prev,
-          ...data,
-          progress: prog,
-          daysRemaining,
-          id: snap.id
-        } : null);
-      }
-    });
-
-    return () => unsub();
-  }, [selectedGoal?.id, path]);
-
-  /* -------------------- Collaborator Functions -------------------- */
-  const resolveEmailToUser = async (email) => {
-    try {
-      const q = query(
-        collection(db, "users"),
-        where("email", "==", email.trim().toLowerCase())
-      );
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const uDoc = snap.docs[0];
-      const data = uDoc.data();
-      return {
-        uid: uDoc.id,
-        email: data.email,
-        displayName: data.displayName || data.username || data.email.split("@")[0],
-        photoURL: data.photoURL || null,
-      };
-    } catch (e) {
-      console.error("resolveEmail error", e);
-      return null;
-    }
-  };
-
-  const handleAddCollaboratorEmail = async () => {
-    const email = collabEmail.trim().toLowerCase();
-    if (!email) return;
-    if (collaborators.some((c) => c.email === email)) {
-      Alert.alert("Already added");
-      return;
-    }
-    setCollabLoading(true);
-    const resolved = await resolveEmailToUser(email);
-    if (!resolved) {
-      Alert.alert("No user found", `User with email ${email} not found in users collection.`);
-      setCollabLoading(false);
-      return;
-    }
-    setCollaborators((s) => [...s, { ...resolved, role: "editor" }]);
-    setCollabEmail("");
-    setCollabLoading(false);
-  };
-
-  const handleAddCollaboratorToExistingGoal = async () => {
-    if (!selectedGoal) return;
-    
-    const email = editCollabEmail.trim().toLowerCase();
-    if (!email) return;
-    
-    if (selectedGoal.participants?.some((uid) => {
-      const participant = selectedGoal.participantDetails?.find(p => p.uid === uid);
-      return participant?.email === email;
-    })) {
-      Alert.alert("Already added", "This user is already a participant.");
-      return;
-    }
-
-    setEditCollabLoading(true);
-    try {
-      const resolved = await resolveEmailToUser(email);
-      if (!resolved) {
-        Alert.alert("No user found", `User with email ${email} not found.`);
-        setEditCollabLoading(false);
-        return;
-      }
-
-      const newParticipant = { 
-        uid: resolved.uid, 
-        displayName: resolved.displayName, 
-        email: resolved.email, 
-        photoURL: resolved.photoURL, 
-        role: "editor" 
-      };
-
-      // Update Firestore
-      await updateDoc(doc(db, path, selectedGoal.id), {
-        participants: arrayUnion(resolved.uid),
-        participantDetails: arrayUnion(newParticipant),
-        updatedAt: serverTimestamp(),
-        activity: arrayUnion({
-          type: "participant_added",
-          actorId: user.uid,
-          message: `${user.displayName || user.email} added ${resolved.displayName} to the goal`,
-          timestamp: new Date()
-        })
+  const handleCancelEdit = () => {
+    if (goal) {
+      setEditForm({
+        title: goal.title || '',
+        description: goal.description || '',
+        dueDate: goal.dueDate ? (goal.dueDate.seconds ? new Date(goal.dueDate.seconds * 1000) : new Date(goal.dueDate)) : new Date(),
+        targetValue: goal.targetValue?.toString() || '',
+        unit: goal.unit || '',
+        priority: goal.priority || 'medium',
+        category: goal.category || 'social',
+        collabEmail: ''
       });
-
-      // ENHANCED: Send better notifications
-      await sendEnhancedGoalInvite(
-        selectedGoal,
-        {
-          uid: resolved.uid,
-          displayName: resolved.displayName,
-          email: resolved.email
-        },
-        {
-          uid: user.uid,
-          displayName: user.displayName || user.email,
-          email: user.email
-        }
-      );
-
-      setEditCollabEmail("");
-      Alert.alert(
-        "Invitation Sent!",
-        `${resolved.displayName} has been invited to the goal! They'll receive a notification.`
-      );
-    } catch (error) {
-      console.error("Error adding collaborator:", error);
-      Alert.alert("Error", "Failed to add collaborator");
-    } finally {
-      setEditCollabLoading(false);
     }
+    setIsEditing(false);
   };
 
-  const handleRemoveCollaboratorLocal = (uidOrEmail) => {
-    setCollaborators((s) => s.filter((c) => c.uid !== uidOrEmail && c.email !== uidOrEmail));
-  };
-
-  /* -------------------- Create Goal Functions -------------------- */
-  const handleCreateSharedGoal = async () => {
-    if (!title.trim()) return Alert.alert("Title required");
-    if (!collaborators.length) return Alert.alert("Add at least one collaborator");
-
-    setLoading(true);
-    try {
-      const participantUids = [...new Set([user.uid, ...collaborators.map((c) => c.uid)])];
-      const participantDetails = [
-        { uid: user.uid, displayName: user.displayName || user.email, email: user.email, photoURL: user.photoURL || null, role: "owner" },
-        ...collaborators.map((c) => ({ uid: c.uid, displayName: c.displayName, email: c.email, photoURL: c.photoURL || null, role: c.role || "editor" })),
-      ];
-      const roles = {};
-      participantDetails.forEach((p) => (roles[p.uid] = p.role));
-
-      const payload = {
-        title: title.trim(),
-        description: description.trim(),
-        ownerId: user.uid,
-        participants: participantUids,
-        participantDetails,
-        roles,
-        milestones: [],
-        comments: [],
-        contributions: { [user.uid]: 0 },
-        currentValue: 0,
-        targetValue: parseInt(targetValue) || 0,
-        unit,
-        priority,
-        category,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        dueDate: dueDate || null,
-        activity: [{ type: "created", actorId: user.uid, message: `${user.displayName || user.email} created this goal`, timestamp: new Date() }],
-      };
-
-      const col = collection(db, path);
-      const docRef = await addDoc(col, payload);
-
-      // Enhanced notifications for all invited collaborators
-      const others = participantUids.filter((uid) => uid !== user.uid);
-      if (others.length) {
-        try {
-          await Promise.all(others.map(async (uid) => {
-            const collab = participantDetails.find(p => p.uid === uid);
-            if (collab && sendNotification) {
-              await sendNotification(
-                [uid],
-                `${user.displayName || user.email} invited you to join "${title.trim()}"`,
-                { 
-                  goalId: docRef.id,
-                  goalTitle: title.trim(),
-                  inviterId: user.uid,
-                  inviterName: user.displayName || user.email
-                },
-                {
-                  type: NOTIFICATION_TYPES.GOAL_INVITE,
-                  priority: "high",
-                  actionRequired: true,
-                  pushTitle: '🎯 New Goal Invitation',
-                  pushBody: `${user.displayName || user.email} invited you to join "${title.trim()}"`,
-                  sendPush: notificationPermission,
-                }
-              );
-            }
-          }));
-        } catch (e) {
-          console.error("Notification error:", e);
-        }
+  const handleDateChange = (event, selectedDate) => {
+    setShowDatePicker(false);
+    if (selectedDate) {
+      setTempDate(selectedDate);
+      
+      if (Platform.OS === 'android') {
+        setShowTimePicker(true);
+      } else {
+        const currentTime = editForm.dueDate || new Date();
+        const newDate = new Date(
+          selectedDate.getFullYear(),
+          selectedDate.getMonth(),
+          selectedDate.getDate(),
+          currentTime.getHours(),
+          currentTime.getMinutes()
+        );
+        setEditForm(prev => ({ ...prev, dueDate: newDate }));
       }
-
-      setCreateVisible(false);
-      resetCreateForm();
-      Alert.alert("Success!", "Goal created and invitations sent!");
-    } catch (e) {
-      console.error("createSharedGoal error", e);
-      Alert.alert("Create failed");
-    } finally {
-      setLoading(false);
     }
   };
 
-  const resetCreateForm = () => {
-    setTitle("");
-    setDescription("");
-    setDueDate(new Date());
-    setTargetValue("");
-    setUnit("");
-    setPriority("medium");
-    setCategory("other");
-    setCollaborators([]);
-    setCollabEmail("");
-  };
-
-  /* -------------------- Progress Functions -------------------- */
-  const handleAddProgress = async () => {
-    if (!selectedGoal || !progressInput.trim()) return;
-    const v = parseInt(progressInput);
-    if (isNaN(v) || v <= 0) return Alert.alert("Enter a valid positive number");
-
-    setLoading(true);
-    try {
-      const docRef = doc(db, path, selectedGoal.id);
-      const updates = {
-        currentValue: (selectedGoal.currentValue || 0) + v,
-        [`contributions.${user.uid}`]: (selectedGoal.contributions?.[user.uid] || 0) + v,
-        updatedAt: serverTimestamp(),
-      };
-      await updateDoc(docRef, updates);
-
-      // activity entry
-      await updateDoc(docRef, { 
-        activity: arrayUnion({ 
-          type: "progress", 
-          actorId: user.uid, 
-          message: `${user.displayName || user.email} added ${v} ${selectedGoal.unit || ""}`, 
-          timestamp: new Date() 
-        }) 
-      });
-
-      // ENHANCED: Send progress celebration
-      await sendProgressCelebration(
-        selectedGoal,
-        v,
-        {
-          uid: user.uid,
-          displayName: user.displayName || user.email,
-          email: user.email
-        }
+  const handleTimeChange = (event, selectedTime) => {
+    setShowTimePicker(false);
+    if (selectedTime) {
+      const currentDate = editForm.dueDate || new Date();
+      const newDateTime = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        selectedTime.getHours(),
+        selectedTime.getMinutes()
       );
-
-      setProgressInput("");
-      Alert.alert("Success!", `Added ${v} ${selectedGoal.unit || ""} to the goal!`);
-    } catch (e) {
-      console.error("addProgress error", e);
-      Alert.alert("Failed to update progress");
-    } finally {
-      setLoading(false);
+      setEditForm(prev => ({ ...prev, dueDate: newDateTime }));
     }
   };
 
-  /* -------------------- Enhanced Comment Functions with Optimistic Updates -------------------- */
   const handleAddComment = async () => {
-    if (!selectedGoal || !commentInput.trim()) return;
+    if (!commentInput.trim()) return;
 
     const tempComment = {
       id: `temp-${Date.now()}`,
@@ -1301,68 +1084,41 @@ export default function SharedGoalsScreen() {
       _pending: true
     };
 
-    // Optimistic update
     setOptimisticComments(prev => [tempComment, ...prev]);
-    setCommentInput("");
+    setCommentInput('');
 
     try {
-      const comment = { 
-        authorId: user.uid, 
-        authorName: user.displayName || user.email, 
-        text: commentInput.trim(), 
-        timestamp: new Date(),
-        authorPhotoURL: user.photoURL || null
-      };
-      
-      await updateDoc(doc(db, path, selectedGoal.id), {
-        comments: arrayUnion(comment),
-        updatedAt: serverTimestamp(),
-        activity: arrayUnion({ 
-          type: "comment", 
-          actorId: user.uid, 
-          message: `${user.displayName || user.email} commented`, 
-          timestamp: new Date() 
-        }),
-      });
-
-      // Remove optimistic comment after successful update
+      await onAddComment(goal.id, commentInput.trim());
       setOptimisticComments(prev => prev.filter(c => c.id !== tempComment.id));
-
-      // Notify other participants
-      const others = (selectedGoal.participants || []).filter((uid) => uid !== user.uid);
-      if (others.length && sendNotification) {
-        try {
-          await sendNotification(
-            others, 
-            `${user.displayName || user.email} commented on "${selectedGoal.title}"`, 
-            { 
-              goalId: selectedGoal.id,
-              goalTitle: selectedGoal.title,
-              comment: commentInput.trim().substring(0, 50) + (commentInput.trim().length > 50 ? "..." : "")
-            },
-            {
-              type: NOTIFICATION_TYPES.COMMENT,
-              pushTitle: '💬 New Comment',
-              pushBody: `${user.displayName || user.email}: ${commentInput.trim().substring(0, 50)}...`,
-              sendPush: notificationPermission,
-            }
-          );
-        } catch (e) {
-          console.error("Comment notification error:", e);
-        }
-      }
-
-    } catch (e) {
-      console.error("addComment error", e);
-      // Remove optimistic comment on error
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (error) {
+      console.error("Add comment error:", error);
       setOptimisticComments(prev => prev.filter(c => c.id !== tempComment.id));
       Alert.alert("Error", "Failed to add comment");
     }
   };
 
-  /* -------------------- Enhanced Milestone Functions with Due Dates -------------------- */
+  const handleAddProgress = async () => {
+    if (!progressInput.trim()) return;
+    
+    const value = parseInt(progressInput);
+    if (isNaN(value) || value <= 0) {
+      Alert.alert("Invalid Value", "Please enter a valid positive number");
+      return;
+    }
+
+    try {
+      await onAddProgress(goal.id, value);
+      setProgressInput('');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch (error) {
+      console.error("Add progress error:", error);
+      Alert.alert("Error", "Failed to update progress");
+    }
+  };
+
   const handleAddMilestone = async () => {
-    if (!selectedGoal || !milestoneInput.trim()) return;
+    if (!milestoneInput.trim()) return;
 
     const tempMilestone = {
       id: `temp-${Date.now()}`,
@@ -1370,1097 +1126,2226 @@ export default function SharedGoalsScreen() {
       completed: false,
       createdAt: new Date(),
       dueDate: milestoneDueDate,
-      completedBy: null,
       _pending: true
     };
 
-    // Optimistic update
     setOptimisticMilestones(prev => [...prev, tempMilestone]);
-    
     const originalInput = milestoneInput;
-    const originalDueDate = milestoneDueDate;
-    
-    setMilestoneInput("");
+    setMilestoneInput('');
     setMilestoneDueDate(null);
 
     try {
-      const milestone = { 
-        title: originalInput.trim(), 
-        completed: false, 
-        createdAt: new Date(), 
-        dueDate: originalDueDate,
-        completedBy: null 
-      };
-      
-      await updateDoc(doc(db, path, selectedGoal.id), {
-        milestones: arrayUnion(milestone),
-        updatedAt: serverTimestamp(),
-        activity: arrayUnion({ 
-          type: "milestone_added", 
-          actorId: user.uid, 
-          message: `${user.displayName || user.email} added a milestone`, 
-          timestamp: new Date() 
-        }),
-      });
-
-      // Remove optimistic milestone after successful update
+      await onAddMilestone(goal.id, originalInput.trim(), milestoneDueDate);
       setOptimisticMilestones(prev => prev.filter(m => m.id !== tempMilestone.id));
-
-      // Enhanced notification for new milestone
-      await sendMilestoneNotification(
-        selectedGoal,
-        { title: originalInput.trim(), index: (selectedGoal.milestones?.length || 0) },
-        "added",
-        {
-          uid: user.uid,
-          displayName: user.displayName || user.email,
-          email: user.email
-        }
-      );
-
-      Alert.alert("Success", "Milestone added!");
-    } catch (e) {
-      console.error("addMilestone error", e);
-      // Remove optimistic milestone on error
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (error) {
+      console.error("Add milestone error:", error);
       setOptimisticMilestones(prev => prev.filter(m => m.id !== tempMilestone.id));
       Alert.alert("Error", "Failed to add milestone");
     }
   };
 
-  const handleToggleMilestone = async (mIndex) => {
-    if (!selectedGoal) return;
-    setLoading(true);
-    try {
-      const snap = await getDoc(doc(db, path, selectedGoal.id));
-      if (!snap.exists()) throw new Error("Goal gone");
-      const data = snap.data();
-      const milestoneList = data.milestones || [];
-      if (!milestoneList[mIndex]) throw new Error("Milestone missing");
-
-      const updated = milestoneList.slice();
-      updated[mIndex] = {
-        ...updated[mIndex],
-        completed: !updated[mIndex].completed,
-        completedBy: !updated[mIndex].completed ? user.uid : null,
-        completedAt: !updated[mIndex].completed ? new Date() : null,
-      };
-
-      await updateDoc(doc(db, path, selectedGoal.id), {
-        milestones: updated,
-        updatedAt: serverTimestamp(),
-        activity: arrayUnion({ 
-          type: "milestone_toggle", 
-          actorId: user.uid, 
-          message: `${user.displayName || user.email} ${updated[mIndex].completed ? "completed" : "uncompleted"} a milestone`, 
-          timestamp: new Date() 
-        }),
-      });
-
-      // Enhanced notification for milestone completion
-      if (updated[mIndex].completed && sendNotification) {
-        await sendMilestoneNotification(
-          data,
-          { title: updated[mIndex].title, index: mIndex },
-          "completed",
-          {
-            uid: user.uid,
-            displayName: user.displayName || user.email,
-            email: user.email
-          }
-        );
-      }
-    } catch (e) {
-      console.error("toggleMilestone error", e);
-      Alert.alert("Error", "Failed to update milestone");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  /* -------------------- Participant Management -------------------- */
-  const canManageRoles = (goalDoc) => {
-    if (!goalDoc) return false;
-    const role = (goalDoc.roles || {})[user.uid] || (goalDoc.ownerId === user.uid ? "owner" : "member");
-    return role === "owner" || role === "admin";
-  };
-
-  const handleRemoveParticipant = async (uid) => {
-    if (!selectedGoal) return;
-    if (!canManageRoles(selectedGoal)) return Alert.alert("Unauthorized");
-    if (uid === selectedGoal.ownerId) return Alert.alert("Cannot remove owner");
-    
-    Alert.alert("Remove Participant", "Are you sure you want to remove this participant?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await updateDoc(doc(db, path, selectedGoal.id), {
-              participants: arrayRemove(uid),
-              participantDetails: (selectedGoal.participantDetails || []).filter((p) => p.uid !== uid),
-              updatedAt: serverTimestamp(),
-              activity: arrayUnion({ 
-                type: "participant_removed", 
-                actorId: user.uid, 
-                message: `${user.displayName || user.email} removed a participant`, 
-                timestamp: new Date() 
-              }),
-            });
-            
-            // Send notification to removed participant
-            if (sendNotification) {
-              await sendNotification(
-                [uid],
-                `You were removed from the goal "${selectedGoal.title}"`,
-                { 
-                  goalId: selectedGoal.id,
-                  goalTitle: selectedGoal.title
-                },
-                {
-                  type: NOTIFICATION_TYPES.PARTICIPANT_REMOVED,
-                  pushTitle: '👋 Removed from Goal',
-                  pushBody: `You were removed from "${selectedGoal.title}"`,
-                  sendPush: notificationPermission,
-                }
-              );
-            }
-            
-            Alert.alert("Success", "Participant removed");
-          } catch (e) {
-            console.error("remove participant", e);
-            Alert.alert("Error", "Failed to remove participant");
-          }
-        }
-      }
-    ]);
-  };
-
-  /* -------------------- Delete Goal -------------------- */
-  const handleDeleteGoal = async () => {
-    if (!selectedGoal) return;
-    if (selectedGoal.ownerId !== user.uid) return Alert.alert("Only owner can delete");
-    
-    Alert.alert("Delete Goal", "Are you sure? This action cannot be undone.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            // Notify all participants before deletion
-            const participants = selectedGoal.participants || [];
-            if (sendNotification) {
-              await Promise.all(participants.map(async (uid) => {
-                if (uid !== user.uid) {
-                  await sendNotification(
-                    [uid],
-                    `The goal "${selectedGoal.title}" was deleted by ${user.displayName || user.email}`,
-                    { 
-                      goalId: selectedGoal.id,
-                      goalTitle: selectedGoal.title
-                    },
-                    {
-                      type: NOTIFICATION_TYPES.GOAL_DELETED,
-                      pushTitle: '🗑️ Goal Deleted',
-                      pushBody: `"${selectedGoal.title}" was deleted`,
-                      sendPush: notificationPermission,
-                    }
-                  );
-                }
-              }));
-            }
-            
-            await deleteDoc(doc(db, path, selectedGoal.id));
-            setDetailVisible(false);
-            setSelectedGoal(null);
-            Alert.alert("Success", "Goal deleted successfully");
-          } catch (e) {
-            console.error("delete goal", e);
-            Alert.alert("Error", "Delete failed");
-          }
-        }
-      }
-    ]);
-  };
-
-  /* -------------------- Enhanced Edit Functionality -------------------- */
-  const openGoalDetail = (goal) => {
-    setSelectedGoal(goal);
-    setEditTitle(goal.title);
-    setEditDescription(goal.description || "");
-    setEditDueDate(goal.dueDate ? (goal.dueDate.seconds ? new Date(goal.dueDate.seconds * 1000) : new Date(goal.dueDate)) : new Date());
-    setEditTargetValue(goal.targetValue?.toString() || "");
-    setEditUnit(goal.unit || "");
-    setEditPriority(goal.priority || "medium");
-    setEditCategory(goal.category || "other");
-    setIsEditing(false);
-    setActiveTab('overview');
-    setOptimisticComments([]);
-    setOptimisticMilestones([]);
-    
-    // Initialize comments and milestones from the goal
-    setComments(goal.comments ? [...goal.comments].reverse() : []);
-    setMilestones(goal.milestones || []);
-    
-    setDetailVisible(true);
-  };
-
-  const handleEditToggle = () => {
-    setIsEditing(!isEditing);
-    Animated.timing(slideAnim, {
-      toValue: isEditing ? 0 : 1,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-  };
-
   const handleSaveEdit = async () => {
-    if (!selectedGoal || !editTitle.trim()) {
+    if (!editForm.title.trim()) {
       Alert.alert("Error", "Title is required");
       return;
     }
 
-    setLoading(true);
     try {
-      const changes = {};
-      if (editTitle !== selectedGoal.title) changes.title = editTitle;
-      if (editDescription !== selectedGoal.description) changes.description = editDescription;
-      if (editDueDate !== selectedGoal.dueDate) changes.dueDate = editDueDate;
-      if (editPriority !== selectedGoal.priority) changes.priority = editPriority;
-      if (editCategory !== selectedGoal.category) changes.category = editCategory;
+      await onEditGoal(goal.id, editForm);
+      setIsEditing(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Success", "Goal updated successfully");
+    } catch (error) {
+      console.error("Update goal error:", error);
+      Alert.alert("Error", "Failed to update goal");
+    }
+  };
 
-      const updates = {
-        title: editTitle.trim(),
-        description: editDescription.trim(),
-        dueDate: editDueDate,
-        targetValue: parseInt(editTargetValue) || 0,
-        unit: editUnit,
-        priority: editPriority,
-        category: editCategory,
+  const handleInviteCollaborator = async () => {
+    if (!inviteEmail.trim()) return;
+    
+    try {
+      await onAddCollaborator(inviteEmail, true);
+      setInviteEmail('');
+      setInviteError('');
+      Alert.alert("Success", "Invitation sent!");
+    } catch (error) {
+      setInviteError(error.message || "Failed to invite user");
+    }
+  };
+
+  if (!goal) return null;
+
+  const getDueColor = () => {
+    if (goal.progress === 100) return COLORS.success;
+    if (isOverdue) return COLORS.danger;
+    if (isDueSoon) return COLORS.warning;
+    return COLORS.textSecondary;
+  };
+
+  const getDueLabel = () => {
+    if (goal.progress === 100) return "Completed";
+    if (isOverdue) return `${Math.abs(daysRemaining)} days overdue`;
+    if (daysRemaining === 0) return "Today";
+    if (daysRemaining === 1) return "Tomorrow";
+    return `${daysRemaining} days left`;
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={styles.detailModalOverlay}>
+        <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+        
+        <SafeAreaView style={styles.detailModalSafeArea}>
+          <View style={styles.detailModalContainer}>
+            <View style={styles.detailModalHeader}>
+              <TouchableOpacity
+                onPress={onClose}
+                style={styles.detailModalBackButton}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
+              </TouchableOpacity>
+              
+              <Text style={styles.detailModalTitle} numberOfLines={1}>
+                {isEditing ? 'Edit Goal' : goal.title}
+              </Text>
+              
+              <View style={{ flexDirection: 'row', gap: 12 }}>
+                {!isEditing && goal.isOwner && (
+                  <TouchableOpacity
+                    onPress={handleEditToggle}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Ionicons name="create-outline" size={22} color={COLORS.shared} />
+                  </TouchableOpacity>
+                )}
+                {!isEditing && goal.isOwner && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      Alert.alert(
+                        "Delete Goal",
+                        "Are you sure you want to delete this goal?",
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Delete",
+                            style: "destructive",
+                            onPress: () => onDeleteGoal(goal)
+                          }
+                        ]
+                      );
+                    }}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Ionicons name="trash-outline" size={22} color={COLORS.danger} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={styles.detailModalContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {isEditing ? (
+                <Animated.View
+                  style={[
+                    styles.detailEditForm,
+                    {
+                      opacity: slideAnim,
+                      transform: [{
+                        translateY: slideAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [20, 0]
+                        })
+                      }]
+                    }
+                  ]}
+                >
+                  <Text style={styles.detailSectionTitle}>Edit Goal Details</Text>
+                  
+                  <View style={styles.detailFormGroup}>
+                    <Text style={styles.detailFormLabel}>Title *</Text>
+                    <View style={styles.detailFormInputContainer}>
+                      <Ionicons name="people-outline" size={20} color={COLORS.shared} />
+                      <TextInput
+                        style={styles.detailFormInput}
+                        value={editForm.title}
+                        onChangeText={(text) => setEditForm(prev => ({ ...prev, title: text }))}
+                        placeholder="Goal title"
+                        placeholderTextColor={COLORS.placeholder}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.detailFormGroup}>
+                    <Text style={styles.detailFormLabel}>Description</Text>
+                    <View style={[styles.detailFormInputContainer, styles.detailFormTextArea]}>
+                      <Ionicons name="document-text-outline" size={20} color={COLORS.shared} />
+                      <TextInput
+                        style={[styles.detailFormInput, { minHeight: 80 }]}
+                        value={editForm.description}
+                        onChangeText={(text) => setEditForm(prev => ({ ...prev, description: text }))}
+                        multiline
+                        placeholder="Describe your goal..."
+                        placeholderTextColor={COLORS.placeholder}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.detailFormRow}>
+                    <View style={[styles.detailFormGroup, { flex: 1, marginRight: 8 }]}>
+                      <Text style={styles.detailFormLabel}>Target</Text>
+                      <View style={styles.detailFormInputContainer}>
+                        <Ionicons name="flag-outline" size={20} color={COLORS.shared} />
+                        <TextInput
+                          style={styles.detailFormInput}
+                          value={editForm.targetValue}
+                          onChangeText={(text) => setEditForm(prev => ({ ...prev, targetValue: text }))}
+                          keyboardType="numeric"
+                          placeholder="100"
+                          placeholderTextColor={COLORS.placeholder}
+                        />
+                      </View>
+                    </View>
+                    <View style={[styles.detailFormGroup, { flex: 1, marginLeft: 8 }]}>
+                      <Text style={styles.detailFormLabel}>Unit</Text>
+                      <View style={styles.detailFormInputContainer}>
+                        <Ionicons name="analytics-outline" size={20} color={COLORS.shared} />
+                        <TextInput
+                          style={styles.detailFormInput}
+                          value={editForm.unit}
+                          onChangeText={(text) => setEditForm(prev => ({ ...prev, unit: text }))}
+                          placeholder="km, books..."
+                          placeholderTextColor={COLORS.placeholder}
+                        />
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.detailFormGroup}>
+                    <Text style={styles.detailFormLabel}>Due Date & Time</Text>
+                    <View style={styles.detailFormDateRow}>
+                      <TouchableOpacity
+                        style={[styles.detailFormDateButton, { flex: 1, marginRight: 8 }]}
+                        onPress={() => {
+                          setTempDate(editForm.dueDate || new Date());
+                          setShowDatePicker(true);
+                        }}
+                      >
+                        <Ionicons name="calendar-outline" size={20} color={COLORS.shared} />
+                        <Text style={styles.detailFormDateText}>
+                          {editForm.dueDate.toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric'
+                          })}
+                        </Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity
+                        style={[styles.detailFormDateButton, { flex: 1, marginLeft: 8 }]}
+                        onPress={() => {
+                          setTempDate(editForm.dueDate || new Date());
+                          setShowTimePicker(true);
+                        }}
+                      >
+                        <Ionicons name="time-outline" size={20} color={COLORS.shared} />
+                        <Text style={styles.detailFormDateText}>
+                          {editForm.dueDate.toLocaleTimeString('en-US', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={tempDate}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={handleDateChange}
+                      minimumDate={new Date()}
+                    />
+                  )}
+
+                  {showTimePicker && (
+                    <DateTimePicker
+                      value={tempDate}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={handleTimeChange}
+                    />
+                  )}
+
+                  <View style={styles.detailFormGroup}>
+                    <Text style={styles.detailFormLabel}>Priority</Text>
+                    <View style={styles.detailPriorityGrid}>
+                      {Object.keys(PRIORITIES).map((p) => (
+                        <TouchableOpacity
+                          key={p}
+                          style={[
+                            styles.detailPriorityCard,
+                            editForm.priority === p && styles.detailPriorityCardActive,
+                            { borderColor: PRIORITIES[p].color }
+                          ]}
+                          onPress={() => setEditForm(prev => ({ ...prev, priority: p }))}
+                        >
+                          <Ionicons
+                            name={PRIORITIES[p].icon}
+                            size={18}
+                            color={editForm.priority === p ? PRIORITIES[p].color : COLORS.textSecondary}
+                          />
+                          <Text style={[
+                            styles.detailPriorityCardText,
+                            editForm.priority === p && { color: PRIORITIES[p].color }
+                          ]}>
+                            {p.charAt(0).toUpperCase() + p.slice(1)}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+
+                  <View style={styles.detailFormGroup}>
+                    <Text style={styles.detailFormLabel}>Category</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={styles.detailCategoryGrid}>
+                        {Object.keys(CATEGORIES).map((cat) => (
+                          <TouchableOpacity
+                            key={cat}
+                            style={[
+                              styles.detailCategoryChip,
+                              { backgroundColor: editForm.category === cat ? CATEGORIES[cat].color : COLORS.card },
+                              editForm.category === cat && { borderWidth: 0 }
+                            ]}
+                            onPress={() => setEditForm(prev => ({ ...prev, category: cat }))}
+                          >
+                            <Ionicons
+                              name={CATEGORIES[cat].icon}
+                              size={14}
+                              color={editForm.category === cat ? 'white' : CATEGORIES[cat].color}
+                            />
+                            <Text style={[
+                              styles.detailCategoryChipText,
+                              { color: editForm.category === cat ? 'white' : CATEGORIES[cat].color }
+                            ]}>
+                              {CATEGORIES[cat].label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </ScrollView>
+                  </View>
+
+                  {goal.isOwner && (
+                    <>
+                      <Text style={[styles.detailSectionTitle, { marginTop: 16 }]}>Add Collaborators</Text>
+                      <View style={styles.detailFormGroup}>
+                        <Text style={styles.detailFormLabel}>Invite by Email</Text>
+                        <View style={styles.detailInviteRow}>
+                          <View style={styles.detailInviteInputContainer}>
+                            <Ionicons name="mail-outline" size={20} color={COLORS.shared} />
+                            <TextInput
+                              style={styles.detailInviteInput}
+                              value={editForm.collabEmail}
+                              onChangeText={(text) => setEditForm(prev => ({ ...prev, collabEmail: text }))}
+                              placeholder="collaborator@example.com"
+                              placeholderTextColor={COLORS.placeholder}
+                              keyboardType="email-address"
+                              autoCapitalize="none"
+                            />
+                          </View>
+                          <TouchableOpacity
+                            style={[
+                              styles.detailInviteButton,
+                              (!editForm.collabEmail.trim() || editCollabLoading) && { opacity: 0.5 }
+                            ]}
+                            onPress={() => onAddCollaborator(editForm.collabEmail, true)}
+                            disabled={!editForm.collabEmail.trim() || editCollabLoading}
+                          >
+                            {editCollabLoading ? (
+                              <ActivityIndicator color="#fff" size="small" />
+                            ) : (
+                              <Ionicons name="person-add" size={20} color="#fff" />
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </>
+                  )}
+
+                  <View style={styles.detailEditActions}>
+                    <TouchableOpacity
+                      style={[styles.detailButton, styles.detailCancelButton]}
+                      onPress={handleCancelEdit}
+                    >
+                      <Text style={styles.detailCancelButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.detailButton, styles.detailSaveButton]}
+                      onPress={handleSaveEdit}
+                    >
+                      <LinearGradient
+                        colors={[COLORS.shared, COLORS.accentBlush]}
+                        style={styles.detailSaveButtonGradient}
+                      >
+                        <Text style={styles.detailSaveButtonText}>Save Changes</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </View>
+                </Animated.View>
+              ) : (
+                <>
+                  <View style={styles.detailTabContainer}>
+                    {TABS.map((tab) => (
+                      <TouchableOpacity
+                        key={tab.id}
+                        style={[
+                          styles.detailTab,
+                          activeTab === tab.id && styles.detailTabActive
+                        ]}
+                        onPress={() => setActiveTab(tab.id)}
+                      >
+                        <Ionicons
+                          name={tab.icon}
+                          size={18}
+                          color={activeTab === tab.id ? COLORS.shared : COLORS.textSecondary}
+                        />
+                        <Text style={[
+                          styles.detailTabText,
+                          activeTab === tab.id && styles.detailTabTextActive
+                        ]}>
+                          {tab.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  {activeTab === 'overview' && (
+                    <View style={styles.detailTabContent}>
+                      <BlurView intensity={90} tint="light" style={styles.detailOverviewCard}>
+                        <View style={styles.detailOverviewHeader}>
+                          <ProgressRing progress={progress} size={70} />
+                          <View style={styles.detailOverviewStats}>
+                            <Text style={styles.detailOverviewTitle}>Progress Overview</Text>
+                            <Text style={styles.detailOverviewValue}>
+                              {goal.currentValue || 0} / {goal.targetValue || 0} {goal.unit}
+                            </Text>
+                            <View style={[styles.dueBadge, { backgroundColor: getDueColor() + '15', marginTop: 8 }]}>
+                              <Ionicons
+                                name={goal.progress === 100 ? "checkmark-circle" : isOverdue ? "alert-circle" : "calendar-outline"}
+                                size={14}
+                                color={getDueColor()}
+                              />
+                              <Text style={[styles.dueText, { color: getDueColor() }]}>
+                                {getDueLabel()}
+                              </Text>
+                            </View>
+                          </View>
+                        </View>
+                        
+                        {goal.description ? (
+                          <View style={styles.detailDescription}>
+                            <Text style={styles.detailDescriptionLabel}>Description</Text>
+                            <Text style={styles.detailDescriptionText}>{goal.description}</Text>
+                          </View>
+                        ) : null}
+
+                        {totalMilestones > 0 && (
+                          <View style={styles.detailMilestonesSummary}>
+                            <View style={styles.detailMilestonesSummaryHeader}>
+                              <Text style={styles.detailMilestonesSummaryTitle}>Milestones</Text>
+                              <Text style={styles.detailMilestonesSummaryCount}>
+                                {completedMilestones}/{totalMilestones}
+                              </Text>
+                            </View>
+                            <View style={styles.detailMilestoneBar}>
+                              <View
+                                style={[
+                                  styles.detailMilestoneBarFill,
+                                  { width: `${(completedMilestones / totalMilestones) * 100}%` }
+                                ]}
+                              />
+                            </View>
+                          </View>
+                        )}
+                      </BlurView>
+
+                      <View style={styles.detailQuickActions}>
+                        <TouchableOpacity
+                          style={styles.detailQuickAction}
+                          onPress={() => setActiveTab('progress')}
+                        >
+                          <LinearGradient
+                            colors={[COLORS.shared + '20', COLORS.shared + '10']}
+                            style={styles.detailQuickActionGradient}
+                          >
+                            <Ionicons name="trending-up-outline" size={24} color={COLORS.shared} />
+                            <Text style={styles.detailQuickActionText}>Add Progress</Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                        
+                        <TouchableOpacity
+                          style={styles.detailQuickAction}
+                          onPress={() => setActiveTab('discussion')}
+                        >
+                          <LinearGradient
+                            colors={[COLORS.accentBlush + '20', COLORS.accentBlush + '10']}
+                            style={styles.detailQuickActionGradient}
+                          >
+                            <Ionicons name="chatbubbles-outline" size={24} color={COLORS.accentBlush} />
+                            <Text style={styles.detailQuickActionText}>Discussion</Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                      </View>
+
+                      <View style={styles.detailParticipantsCard}>
+                        <View style={styles.detailParticipantsHeader}>
+                          <Text style={styles.detailParticipantsTitle}>Participants</Text>
+                          <Text style={styles.detailParticipantsCount}>
+                            {goal.participantDetails?.length || 0} members
+                          </Text>
+                        </View>
+                        
+                        {(goal.participantDetails || []).map((participant, idx) => {
+                          const role = goal.roles?.[participant.uid] || 
+                                     (participant.uid === goal.ownerId ? 'owner' : 'member');
+                          
+                          return (
+                            <View key={participant.uid || idx} style={styles.detailParticipantItem}>
+                              <UserAvatar user={participant} size={44} />
+                              <View style={styles.detailParticipantInfo}>
+                                <Text style={styles.detailParticipantName}>
+                                  {participant.displayName}
+                                  {participant.uid === user.uid && ' (You)'}
+                                </Text>
+                                <Text style={styles.detailParticipantEmail}>{participant.email}</Text>
+                              </View>
+                              <View style={styles.detailParticipantRole}>
+                                <Text style={[
+                                  styles.detailRoleText,
+                                  role === 'owner' && { color: COLORS.shared, fontWeight: '700' },
+                                  role === 'admin' && { color: COLORS.info },
+                                  role === 'editor' && { color: COLORS.sage }
+                                ]}>
+                                  {role}
+                                </Text>
+                              </View>
+                              {canManageRoles?.(goal) && participant.uid !== goal.ownerId && participant.uid !== user.uid && (
+                                <TouchableOpacity
+                                  style={styles.detailRemoveParticipantBtn}
+                                  onPress={() => onRemoveParticipant?.(goal.id, participant.uid)}
+                                >
+                                  <Ionicons name="close-circle" size={20} color={COLORS.danger} />
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  )}
+
+                  {activeTab === 'progress' && (
+                    <View style={styles.detailTabContent}>
+                      <BlurView intensity={90} tint="light" style={styles.detailProgressCard}>
+                        <Text style={styles.detailSectionTitle}>Add Progress</Text>
+                        <Text style={styles.detailProgressHelpText}>
+                          Current: {goal.currentValue || 0} {goal.unit} • 
+                          Target: {goal.targetValue || 0} {goal.unit}
+                        </Text>
+                        
+                        <View style={styles.detailProgressInputRow}>
+                          <View style={styles.detailProgressInputWrapper}>
+                            <TextInput
+                              style={styles.detailProgressInput}
+                              value={progressInput}
+                              onChangeText={setProgressInput}
+                              placeholder="Enter amount"
+                              placeholderTextColor={COLORS.placeholder}
+                              keyboardType="numeric"
+                            />
+                            <Text style={styles.detailUnitText}>{goal.unit}</Text>
+                          </View>
+                          <TouchableOpacity
+                            style={[
+                              styles.detailProgressAddButton,
+                              (!progressInput.trim() || isNaN(parseInt(progressInput))) && styles.detailProgressAddButtonDisabled
+                            ]}
+                            onPress={handleAddProgress}
+                            disabled={!progressInput.trim() || isNaN(parseInt(progressInput))}
+                          >
+                            <LinearGradient
+                              colors={[COLORS.shared, COLORS.accentBlush]}
+                              style={styles.detailProgressAddButtonGradient}
+                            >
+                              <Ionicons name="add-circle" size={24} color="#fff" />
+                            </LinearGradient>
+                          </TouchableOpacity>
+                        </View>
+                      </BlurView>
+
+                      <BlurView intensity={90} tint="light" style={styles.detailMilestonesCard}>
+                        <View style={styles.detailMilestonesHeader}>
+                          <Text style={styles.detailSectionTitle}>Milestones</Text>
+                          {totalMilestones > 0 && (
+                            <Text style={styles.detailMilestonesCount}>
+                              {completedMilestones}/{totalMilestones}
+                            </Text>
+                          )}
+                        </View>
+                        
+                        {optimisticMilestones.map((m) => (
+                          <View key={m.id} style={[styles.detailMilestoneItem, styles.detailMilestoneItemPending]}>
+                            <View style={styles.detailMilestoneCheckbox}>
+                              <ActivityIndicator size="small" color={COLORS.shared} />
+                            </View>
+                            <View style={styles.detailMilestoneContent}>
+                              <Text style={styles.detailMilestoneText}>{m.title}</Text>
+                              {m.dueDate && (
+                                <Text style={styles.detailMilestoneDate}>
+                                  Due: {m.dueDate.toLocaleDateString()}
+                                </Text>
+                              )}
+                              <Text style={styles.detailPendingText}>Adding...</Text>
+                            </View>
+                          </View>
+                        ))}
+                        
+                        {milestones.map((m, index) => (
+                          <TouchableOpacity
+                            key={index}
+                            style={[
+                              styles.detailMilestoneItem,
+                              m?.completed && styles.detailMilestoneItemCompleted
+                            ]}
+                            onPress={() => onToggleMilestone(goal.id, index)}
+                            disabled={!goal.isOwner}
+                          >
+                            <View style={styles.detailMilestoneCheckbox}>
+                              <Ionicons
+                                name={m?.completed ? "checkmark-circle" : "ellipse-outline"}
+                                size={24}
+                                color={m?.completed ? COLORS.success : COLORS.textSecondary}
+                              />
+                            </View>
+                            <View style={styles.detailMilestoneContent}>
+                              <Text style={[
+                                styles.detailMilestoneText,
+                                m?.completed && styles.detailMilestoneTextCompleted
+                              ]}>
+                                {m?.title || 'Unnamed Milestone'}
+                              </Text>
+                              {m?.dueDate && (
+                                <Text style={styles.detailMilestoneDate}>
+                                  Due: {formatDate(m.dueDate)}
+                                </Text>
+                              )}
+                              {m?.completedAt && (
+                                <Text style={styles.detailMilestoneDate}>
+                                  Completed {formatRelativeTime(m.completedAt)}
+                                </Text>
+                              )}
+                            </View>
+                          </TouchableOpacity>
+                        ))}
+
+                        {/* ✅ ADD MILESTONE INPUT - Only in progress tab */}
+                        {goal.isOwner && (
+                          <View style={styles.detailAddMilestoneRow}>
+                            <View style={styles.detailAddMilestoneInputContainer}>
+                              <Ionicons name="add-circle-outline" size={20} color={COLORS.shared} />
+                              <TextInput
+                                style={styles.detailAddMilestoneInput}
+                                value={milestoneInput}
+                                onChangeText={setMilestoneInput}
+                                placeholder="Add a new milestone..."
+                                placeholderTextColor={COLORS.placeholder}
+                              />
+                            </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.detailAddMilestoneButton,
+                                !milestoneInput.trim() && styles.detailAddMilestoneButtonDisabled
+                              ]}
+                              onPress={handleAddMilestone}
+                              disabled={!milestoneInput.trim()}
+                            >
+                              <Ionicons name="add" size={20} color="#fff" />
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </BlurView>
+                    </View>
+                  )}
+
+                  {activeTab === 'discussion' && (
+                    <View style={styles.detailTabContent}>
+                      <BlurView intensity={90} tint="light" style={styles.detailCommentCard}>
+                        <Text style={styles.detailSectionTitle}>Discussion</Text>
+                        <View style={styles.detailCommentInputRow}>
+                          <UserAvatar user={user} size={40} />
+                          <View style={styles.detailCommentInputWrapper}>
+                            <TextInput
+                              ref={commentInputRef}
+                              style={styles.detailCommentInput}
+                              value={commentInput}
+                              onChangeText={setCommentInput}
+                              placeholder="Write a comment..."
+                              placeholderTextColor={COLORS.placeholder}
+                              multiline
+                            />
+                            <TouchableOpacity
+                              style={[
+                                styles.detailCommentSendButton,
+                                !commentInput.trim() && styles.detailCommentSendButtonDisabled
+                              ]}
+                              onPress={handleAddComment}
+                              disabled={!commentInput.trim()}
+                            >
+                              <Ionicons name="send" size={18} color="#fff" />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      </BlurView>
+
+                      <View style={styles.detailCommentsList}>
+                        {optimisticComments.map((comment) => (
+                          <View key={comment.id} style={[styles.detailCommentItem, styles.detailCommentItemPending]}>
+                            <UserAvatar user={comment} size={40} />
+                            <View style={styles.detailCommentContent}>
+                              <View style={styles.detailCommentHeader}>
+                                <Text style={styles.detailCommentAuthor}>{comment.authorName}</Text>
+                                <Text style={styles.detailCommentTime}>Sending...</Text>
+                              </View>
+                              <Text style={styles.detailCommentText}>{comment.text}</Text>
+                              <ActivityIndicator size="small" color={COLORS.shared} style={styles.detailPendingIndicator} />
+                            </View>
+                          </View>
+                        ))}
+                        
+                        {comments.map((c, idx) => (
+                          <View key={idx} style={styles.detailCommentItem}>
+                            <UserAvatar user={c} size={40} />
+                            <View style={styles.detailCommentContent}>
+                              <View style={styles.detailCommentHeader}>
+                                <Text style={styles.detailCommentAuthor}>{c.authorName}</Text>
+                                <Text style={styles.detailCommentTime}>
+                                  {formatRelativeTime(c.timestamp)}
+                                </Text>
+                              </View>
+                              <Text style={styles.detailCommentText}>{c.text}</Text>
+                            </View>
+                          </View>
+                        ))}
+
+                        {comments.length === 0 && optimisticComments.length === 0 && (
+                          <View style={styles.detailEmptyComments}>
+                            <Ionicons name="chatbubbles-outline" size={48} color={COLORS.textTertiary} />
+                            <Text style={styles.detailEmptyCommentsText}>No comments yet</Text>
+                            <Text style={styles.detailEmptyCommentsSubtext}>
+                              Be the first to start the discussion!
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  )}
+                </>
+              )}
+            </ScrollView>
+          </View>
+        </SafeAreaView>
+      </View>
+    </Modal>
+  );
+};
+
+/* ================================================================================
+   🏆 MAIN SHARED GOALS SCREEN
+   ================================================================================ */
+
+export default function SharedGoalsScreen() {
+  const { user, appId } = useApp();
+  const path = useMemo(() => getSharedGoalsCollectionPath(appId), [appId]);
+
+  // State
+  const [goals, setGoals] = useState([]);
+  const [filteredGoals, setFilteredGoals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [viewMode, setViewMode] = useState("list");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("all");
+  const [expandedGoalId, setExpandedGoalId] = useState(null);
+  const [activeTab, setActiveTab] = useState('progress');
+
+  // Modal states
+  const [createVisible, setCreateVisible] = useState(false);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
+  const [selectedDetailGoal, setSelectedDetailGoal] = useState(null);
+
+  // Form state
+  const [createForm, setCreateForm] = useState({
+    title: "",
+    description: "",
+    dueDate: new Date(),
+    targetValue: "",
+    unit: "",
+    priority: "medium",
+    category: "social",
+    collaborators: [],
+    collabEmail: ""
+  });
+
+  // Date picker states for create modal
+  const [showCreateDatePicker, setShowCreateDatePicker] = useState(false);
+  const [showCreateTimePicker, setShowCreateTimePicker] = useState(false);
+  const [tempCreateDate, setTempCreateDate] = useState(new Date());
+
+  const [editCollabLoading, setEditCollabLoading] = useState(false);
+
+  // Notification state
+  const [notificationPermission, setNotificationPermission] = useState(false);
+  const notificationListener = useRef(null);
+  const responseListener = useRef(null);
+
+  // Animation refs
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const flatListRef = useRef(null);
+
+  // User cache
+  const userCache = useRef(new Map());
+
+  /* ================================================================================
+     🔔 PUSH TOKEN REGISTRATION
+     ================================================================================ */
+
+  useEffect(() => {
+    const registerPushToken = async () => {
+      if (user?.uid) {
+        try {
+          const token = await registerAndSaveExpoPushToken(user.uid);
+          if (token) {
+            console.log('✅ Push token registered for user:', user.uid);
+          }
+        } catch (error) {
+          console.error('❌ Failed to register push token:', error);
+        }
+      }
+    };
+
+    registerPushToken();
+  }, [user]);
+
+  useEffect(() => {
+    const initializePushNotifications = async () => {
+      try {
+        configureNotificationHandler?.();
+        const hasPermission = await requestNotificationPermissions?.();
+        setNotificationPermission(!!hasPermission);
+        
+        if (hasPermission) {
+          notificationListener.current = setupNotificationReceivedHandler?.();
+          responseListener.current = setupNotificationResponseHandler?.();
+        }
+      } catch (error) {
+        console.error('❌ Error initializing push notifications:', error);
+      }
+    };
+
+    initializePushNotifications();
+
+    return () => {
+      notificationListener.current?.remove?.();
+      responseListener.current?.remove?.();
+    };
+  }, []);
+
+  /* ================================================================================
+     📶 NETWORK MONITOR
+     ================================================================================ */
+
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsOffline(!state.isConnected);
+    });
+    NetInfo.fetch().then((state) => setIsOffline(!state.isConnected));
+    return () => unsubscribe();
+  }, []);
+
+  /* ================================================================================
+     👤 USER DETAILS FETCHING
+     ================================================================================ */
+
+  const fetchUserDetails = useCallback(async (uids) => {
+    const uniqueUids = [...new Set(uids.filter(uid => uid))];
+    const result = [];
+    
+    for (const uid of uniqueUids) {
+      if (userCache.current.has(uid)) {
+        result.push(userCache.current.get(uid));
+        continue;
+      }
+      
+      try {
+        const userDoc = await getDoc(doc(db, "users", uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          const userInfo = {
+            uid: userDoc.id,
+            displayName: userData.displayName || userData.username || userData.email?.split("@")[0] || "User",
+            email: userData.email || "",
+            photoURL: userData.photoURL || null,
+          };
+          userCache.current.set(uid, userInfo);
+          result.push(userInfo);
+        }
+      } catch (error) {
+        console.warn("Error fetching user details for uid:", uid, error);
+      }
+    }
+    return result;
+  }, []);
+
+  /* ================================================================================
+     🔥 FIRESTORE LISTENER
+     ================================================================================ */
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    
+    setLoading(true);
+    
+    const colRef = collection(db, path);
+    // ✅ FIX: Field is "participants" — ensure firestore.rules uses "participants" not "participantUids"
+    const q = query(colRef, where("participants", "array-contains", user.uid));
+
+    const unsubscribe = onSnapshot(
+      q,
+      async (snapshot) => {
+        try {
+          const goalsList = await Promise.all(
+            snapshot.docs.map(async (docSnap) => {
+              const data = docSnap.data();
+              const hasPending = !!docSnap.metadata?.hasPendingWrites;
+              const id = docSnap.id;
+
+              if (!data.participantDetails && data.participants) {
+                try {
+                  const details = await fetchUserDetails(data.participants);
+                  data.participantDetails = details;
+                } catch (error) {
+                  console.warn("Error fetching participant details for goal:", id, error);
+                  data.participantDetails = [];
+                }
+              }
+
+              const progress = computeProgress(data);
+              const daysRemaining = getDaysRemaining(data.dueDate);
+              const isOwner = data.ownerId === user.uid || data.creatorId === user.uid;
+
+              return { 
+                id, 
+                ...data, 
+                progress, 
+                daysRemaining,
+                _hasPending: hasPending,
+                isOwner,
+                activeTab: 'progress',
+              };
+            })
+          );
+
+          goalsList.sort((a, b) => {
+            if (a.progress === 100 && b.progress < 100) return 1;
+            if (b.progress === 100 && a.progress < 100) return -1;
+            return new Date(a.dueDate || 0) - new Date(b.dueDate || 0);
+          });
+
+          setGoals(goalsList);
+        } catch (error) {
+          console.error("Error processing goals:", error);
+        } finally {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      },
+      (error) => {
+        console.error("Shared goals snapshot error:", error);
+        setLoading(false);
+        setRefreshing(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user, appId, fetchUserDetails, path]);
+
+  /* ================================================================================
+     🔍 FILTERING & SEARCH
+     ================================================================================ */
+
+  useEffect(() => {
+    let filtered = [...goals];
+    
+    if (selectedCategory !== "all") {
+      filtered = filtered.filter(g => g.category === selectedCategory);
+    }
+    
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(g => 
+        g.title?.toLowerCase().includes(query) ||
+        g.description?.toLowerCase().includes(query)
+      );
+    }
+    
+    setFilteredGoals(filtered);
+  }, [goals, selectedCategory, searchQuery]);
+
+  /* ================================================================================
+     👥 COLLABORATOR RESOLUTION
+     ================================================================================ */
+
+  const resolveEmailToUser = useCallback(async (email) => {
+    try {
+      const normalizedEmail = email.trim().toLowerCase();
+      if (!normalizedEmail) return null;
+
+      const q = query(
+        collection(db, "users"),
+        where("email", "==", normalizedEmail)
+      );
+      const snap = await getDocs(q);
+      if (snap.empty) return null;
+      
+      const userDoc = snap.docs[0];
+      const userData = userDoc.data();
+      
+      return {
+        uid: userDoc.id,
+        email: userData.email,
+        displayName: userData.displayName || userData.username || userData.email.split("@")[0],
+        photoURL: userData.photoURL || null,
+      };
+    } catch (error) {
+      console.error("Error resolving email to user:", error);
+      return null;
+    }
+  }, []);
+
+  /* ================================================================================
+     🎯 GOAL OPERATIONS
+     ================================================================================ */
+
+  const handleAddCollaborator = useCallback(async (email, isEditMode = false) => {
+    if (!email.trim()) return;
+    
+    // ✅ FIX: Validate email format before hitting Firestore
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      Alert.alert("Invalid Email", "Please enter a valid email address (e.g. name@example.com).");
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    
+    if (isEditMode) {
+      if (selectedDetailGoal?.participants?.some(uid => {
+        const participant = selectedDetailGoal.participantDetails?.find(p => p.uid === uid);
+        return participant?.email === normalizedEmail;
+      })) {
+        Alert.alert("Already Added", "This user is already a participant.");
+        return;
+      }
+      setEditCollabLoading(true);
+    }
+
+    try {
+      const resolvedUser = await resolveEmailToUser(normalizedEmail);
+      if (!resolvedUser) {
+        Alert.alert("User Not Found", `No user found with email ${normalizedEmail}`);
+        return;
+      }
+
+      if (isEditMode) {
+        const newParticipant = { ...resolvedUser, role: "editor" };
+
+        await updateDoc(doc(db, path, selectedDetailGoal.id), {
+          participants: arrayUnion(resolvedUser.uid),
+          participantDetails: arrayUnion(newParticipant),
+          updatedAt: serverTimestamp(),
+          activity: arrayUnion({
+            type: "participant_added",
+            actorId: user.uid,
+            message: `${user.displayName || user.email} added ${resolvedUser.displayName} to the goal`,
+            timestamp: new Date()
+          })
+        });
+
+        await sendNotificationToOthers(
+          user.uid,
+          [resolvedUser.uid],
+          `${user.displayName || user.email} invited you to join "${selectedDetailGoal.title}"`,
+          { 
+            goalId: selectedDetailGoal.id,
+            goalTitle: selectedDetailGoal.title,
+            inviterId: user.uid,
+            inviterName: user.displayName || user.email
+          },
+          {
+            type: NOTIFICATION_TYPES?.GOAL_INVITE,
+            priority: "high",
+            actionRequired: true,
+            pushTitle: '🎯 New Goal Invitation',
+            senderName: user.displayName || user.email,
+          }
+        );
+
+        const existingParticipants = (selectedDetailGoal.participants || []).filter(uid => 
+          uid && uid !== user.uid && uid !== resolvedUser.uid
+        );
+        
+        if (existingParticipants.length > 0) {
+          await sendNotificationToOthers(
+            user.uid,
+            existingParticipants,
+            `${resolvedUser.displayName} joined "${selectedDetailGoal.title}"`,
+            { 
+              goalId: selectedDetailGoal.id,
+              goalTitle: selectedDetailGoal.title,
+              newMemberId: resolvedUser.uid,
+              newMemberName: resolvedUser.displayName
+            },
+            {
+              type: NOTIFICATION_TYPES?.GOAL_JOINED,
+              pushTitle: '👋 New Member',
+              senderName: user.displayName || user.email,
+            }
+          );
+        }
+
+        Alert.alert("Invitation Sent!", `${resolvedUser.displayName} has been invited to the goal!`);
+      } else {
+        setCreateForm(prev => ({
+          ...prev,
+          collaborators: [...prev.collaborators, { ...resolvedUser, role: "editor" }],
+          collabEmail: ""
+        }));
+      }
+    } catch (error) {
+      console.error("Error adding collaborator:", error);
+      Alert.alert("Error", "Failed to add collaborator");
+    } finally {
+      if (isEditMode) setEditCollabLoading(false);
+    }
+  }, [user, selectedDetailGoal, path, resolveEmailToUser]);
+
+  const handleCreateDateChange = (event, selectedDate) => {
+    setShowCreateDatePicker(false);
+    if (selectedDate) {
+      setTempCreateDate(selectedDate);
+      
+      if (Platform.OS === 'android') {
+        setShowCreateTimePicker(true);
+      } else {
+        const currentTime = createForm.dueDate || new Date();
+        const newDate = new Date(
+          selectedDate.getFullYear(),
+          selectedDate.getMonth(),
+          selectedDate.getDate(),
+          currentTime.getHours(),
+          currentTime.getMinutes()
+        );
+        setCreateForm(prev => ({ ...prev, dueDate: newDate }));
+      }
+    }
+  };
+
+  const handleCreateTimeChange = (event, selectedTime) => {
+    setShowCreateTimePicker(false);
+    if (selectedTime) {
+      const currentDate = createForm.dueDate || new Date();
+      const newDateTime = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        selectedTime.getHours(),
+        selectedTime.getMinutes()
+      );
+      setCreateForm(prev => ({ ...prev, dueDate: newDateTime }));
+    }
+  };
+
+  const handleCreateSharedGoal = useCallback(async () => {
+    if (!createForm.title.trim()) {
+      Alert.alert("Title Required", "Please enter a goal title");
+      return;
+    }
+
+    if (createForm.collaborators.length === 0) {
+      Alert.alert("Collaborators Required", "Please add at least one collaborator");
+      return;
+    }
+
+    const targetValue = parseInt(createForm.targetValue);
+    if (isNaN(targetValue) || targetValue <= 0) {
+      Alert.alert("Invalid Target", "Please enter a valid positive number for the target");
+      return;
+    }
+
+    setLoading(true);
+    
+    try {
+      const participantUids = [...new Set([user.uid, ...createForm.collaborators.map(c => c.uid)])];
+      const participantDetails = [
+        { 
+          uid: user.uid, 
+          displayName: user.displayName || user.email, 
+          email: user.email, 
+          photoURL: user.photoURL || null, 
+          role: "owner" 
+        },
+        ...createForm.collaborators.map(c => ({ 
+          ...c, 
+          role: c.role || "editor" 
+        })),
+      ];
+      
+      const roles = {};
+      participantDetails.forEach(p => roles[p.uid] = p.role);
+
+      const payload = {
+        title: createForm.title.trim(),
+        description: createForm.description.trim(),
+        ownerId: user.uid,
+        creatorId: user.uid,
+        participants: participantUids,
+        participantDetails,
+        roles,
+        milestones: [],
+        comments: [],
+        contributions: { [user.uid]: 0 },
+        currentValue: 0,
+        targetValue,
+        unit: createForm.unit.trim(),
+        priority: createForm.priority,
+        category: createForm.category,
+        // ✅ ADDED: Notification flags for cloud function
+        notificationSent: false,
+        notificationSentAt: null,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        dueDate: createForm.dueDate || null,
+        activity: [{
+          type: "created",
+          actorId: user.uid,
+          message: `${user.displayName || user.email} created this goal`,
+          timestamp: new Date()
+        }],
       };
 
-      await updateDoc(doc(db, path, selectedGoal.id), updates);
+      const col = collection(db, path);
+      const docRef = await addDoc(col, payload);
 
-      // Add to activity log
-      await updateDoc(doc(db, path, selectedGoal.id), {
+      const collaboratorsUids = participantUids.filter(uid => uid !== user.uid);
+      await sendNotificationToOthers(
+        user.uid,
+        collaboratorsUids,
+        `${user.displayName || user.email} invited you to join "${createForm.title.trim()}"`,
+        { 
+          goalId: docRef.id,
+          goalTitle: createForm.title.trim(),
+          inviterId: user.uid,
+          inviterName: user.displayName || user.email
+        },
+        {
+          type: NOTIFICATION_TYPES?.GOAL_INVITE,
+          priority: "high",
+          actionRequired: true,
+          pushTitle: '🎯 New Goal Invitation',
+          senderName: user.displayName || user.email,
+        }
+      );
+
+      setCreateVisible(false);
+      resetCreateForm();
+      Alert.alert("Success!", "Goal created and invitations sent!");
+    } catch (error) {
+      console.error("Create goal error:", error);
+      Alert.alert("Error", "Failed to create goal");
+    } finally {
+      setLoading(false);
+    }
+  }, [createForm, user, path]);
+
+  const resetCreateForm = useCallback(() => {
+    setCreateForm({
+      title: "",
+      description: "",
+      dueDate: new Date(),
+      targetValue: "",
+      unit: "",
+      priority: "medium",
+      category: "social",
+      collaborators: [],
+      collabEmail: ""
+    });
+    setTempCreateDate(new Date());
+  }, []);
+
+  const handleAddProgress = useCallback(async (goalId, value) => {
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    
+    try {
+      const docRef = doc(db, path, goalId);
+      const newCurrentValue = (goal.currentValue || 0) + value;
+      const newProgress = Math.min(Math.round((newCurrentValue / goal.targetValue) * 100), 100);
+      const isCompleted = newProgress >= 100;
+      
+      // ✅ FIX: Single atomic write — previously two separate updateDoc calls
+      // which could leave data in a broken state if the second write failed
+      await updateDoc(docRef, {
+        currentValue: newCurrentValue,
+        [`contributions.${user.uid}`]: (goal.contributions?.[user.uid] || 0) + value,
+        // ✅ ADDED: Mark notification as sent if goal is completed
+        notificationSent: isCompleted ? true : goal.notificationSent,
+        notificationSentAt: isCompleted ? new Date() : goal.notificationSentAt,
+        updatedAt: serverTimestamp(),
         activity: arrayUnion({ 
-          type: "goal_updated", 
+          type: "progress", 
           actorId: user.uid, 
-          message: `${user.displayName || user.email} updated goal details`, 
+          message: `${user.displayName || user.email} added ${value} ${goal.unit || ""}`, 
           timestamp: new Date() 
         })
       });
 
-      // Send update notification if there are changes
-      if (Object.keys(changes).length > 0 && sendNotification) {
-        await sendGoalUpdateNotification(
-          selectedGoal,
-          {
-            uid: user.uid,
-            displayName: user.displayName || user.email,
-            email: user.email
-          },
-          changes
-        );
+      const progressPercentage = Math.min(Math.round((newCurrentValue / goal.targetValue) * 100), 100);
+      
+      let message = `${user.displayName || user.email} added ${value} ${goal.unit || ""} to "${goal.title}"`;
+      let pushTitle = '📈 Progress Update';
+      let type = NOTIFICATION_TYPES?.PROGRESS_UPDATE;
+      
+      if (progressPercentage >= 100) {
+        message = `🎉 Goal "${goal.title}" has been 100% completed!`;
+        pushTitle = '🎉 Goal Completed!';
+        type = NOTIFICATION_TYPES?.GOAL_COMPLETED;
       }
 
-      setIsEditing(false);
-      Alert.alert("Success", "Goal updated successfully");
-    } catch (error) {
-      console.error("Error updating goal:", error);
-      Alert.alert("Error", "Failed to update goal");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCancelEdit = () => {
-    if (selectedGoal) {
-      setEditTitle(selectedGoal.title);
-      setEditDescription(selectedGoal.description || "");
-      setEditDueDate(selectedGoal.dueDate ? (selectedGoal.dueDate.seconds ? new Date(selectedGoal.dueDate.seconds * 1000) : new Date(selectedGoal.dueDate)) : new Date());
-      setEditTargetValue(selectedGoal.targetValue?.toString() || "");
-      setEditUnit(selectedGoal.unit || "");
-      setEditPriority(selectedGoal.priority || "medium");
-      setEditCategory(selectedGoal.category || "other");
-    }
-    setIsEditing(false);
-  };
-
-  /* -------------------- Enhanced UI Components -------------------- */
-  const AvatarsInline = ({ details, max = 4, size = 28 }) => {
-    const arr = details || [];
-    const show = arr.slice(0, max);
-    const remaining = arr.length - max;
-    return (
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        {show.map((p, i) => (
-          <View key={p.uid || i} style={{ marginLeft: i === 0 ? 0 : -8 }}>
-            <UserAvatar user={p} size={size} />
-          </View>
-        ))}
-        {remaining > 0 && (
-          <View style={[
-            styles.avatar, 
-            { 
-              marginLeft: -8, 
-              backgroundColor: COLORS.blush,
-              width: size,
-              height: size,
-              borderRadius: size / 2
-            }
-          ]}>
-            <Text style={{ color: "#fff", fontSize: size * 0.3 }}>+{remaining}</Text>
-          </View>
-        )}
-      </View>
-    );
-  };
-
-  const GoalCard = ({ item }) => {
-    if (!animValues.current[item.id]) animValues.current[item.id] = new Animated.Value(0);
-    
-    React.useEffect(() => {
-      Animated.timing(animValues.current[item.id], { 
-        toValue: 1, 
-        duration: 360, 
-        useNativeDriver: true 
-      }).start();
-    }, []);
-
-    const daysRemaining = item.daysRemaining;
-    const isOverdue = daysRemaining !== null && daysRemaining < 0;
-    const isDueSoon = daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 7;
-
-    return (
-      <Animated.View style={{ 
-        opacity: animValues.current[item.id], 
-        transform: [{ 
-          translateY: animValues.current[item.id].interpolate({ 
-            inputRange: [0,1], 
-            outputRange: [8,0] 
-          }) 
-        }] 
-      }}>
-        <TouchableOpacity 
-          style={[
-            styles.card,
-            isOverdue && styles.overdueCard,
-            isDueSoon && styles.dueSoonCard
-          ]} 
-          activeOpacity={0.9} 
-          onPress={() => openGoalDetail(item)}
-        >
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <View style={{ flex: 1, marginRight: 12 }}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-                <PriorityBadge priority={item.priority} />
-              </View>
-              
-              {item.description ? (
-                <Text style={styles.cardDesc} numberOfLines={2}>{item.description}</Text>
-              ) : null}
-
-              <View style={styles.cardMeta}>
-                <View style={styles.metaItem}>
-                  <Ionicons name="people" size={14} color={COLORS.softText} />
-                  <Text style={styles.metaText}>{item.participants?.length || 1}</Text>
-                </View>
-                
-                {item.dueDate && (
-                  <View style={styles.metaItem}>
-                    <Ionicons 
-                      name="calendar" 
-                      size={14} 
-                      color={isOverdue ? COLORS.error : isDueSoon ? COLORS.warning : COLORS.softText} 
-                    />
-                    <Text style={[
-                      styles.metaText,
-                      isOverdue && { color: COLORS.error },
-                      isDueSoon && { color: COLORS.warning }
-                    ]}>
-                      {formatDate(item.dueDate)}
-                    </Text>
-                  </View>
-                )}
-
-                {item.category && item.category !== 'other' && (
-                  <View style={styles.metaItem}>
-                    <Ionicons name={getCategoryIcon(item.category)} size={14} color={COLORS.softText} />
-                    <Text style={styles.metaText}>{item.category}</Text>
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.cardFooter}>
-                <AvatarsInline details={item.participantDetails || []} />
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={{ color: COLORS.softText, fontSize: 12 }}>
-                    {item.participants?.length || 1} members
-                  </Text>
-                  {item._hasPending && (
-                    <Text style={{ color: COLORS.softText, fontSize: 11 }}>Syncing…</Text>
-                  )}
-                </View>
-              </View>
-            </View>
-            
-            {/* FIX: Show progress ring with calculated progress */}
-            <ProgressRing size={64} progress={item.progress || 0} />
-          </View>
-
-          {item.milestones?.length > 0 && (
-            <View style={styles.milestoneProgress}>
-              <Text style={styles.milestoneProgressText}>
-                {item.milestones.filter(m => m && m.completed).length}/{item.milestones.length} milestones
-              </Text>
-              <View style={styles.milestoneBar}>
-                <View 
-                  style={[
-                    styles.milestoneProgressFill,
-                    { 
-                      width: `${(item.milestones.filter(m => m && m.completed).length / item.milestones.length) * 100}%` 
-                    }
-                  ]} 
-                />
-              </View>
-            </View>
-          )}
-        </TouchableOpacity>
-      </Animated.View>
-    );
-  };
-
-  const renderEditForm = () => (
-    <Animated.View 
-      style={[
-        styles.editForm,
+      await sendNotificationToOthers(
+        user.uid,
+        goal.participants || [],
+        message,
+        { 
+          goalId: goal.id,
+          goalTitle: goal.title,
+          addedValue: value,
+          unit: goal.unit,
+          progressPercentage
+        },
         {
-          opacity: slideAnim,
-          transform: [{
-            translateY: slideAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [20, 0]
-            })
-          }]
+          type,
+          pushTitle,
+          senderName: user.displayName || user.email,
         }
-      ]}
-    >
-      <Text style={styles.sectionTitle}>Edit Goal Details</Text>
+      );
+
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      Alert.alert("Success!", `Added ${value} ${goal.unit || ""} to the goal!`);
+    } catch (error) {
+      console.error("Add progress error:", error);
+      Alert.alert("Error", "Failed to update progress");
+    }
+  }, [goals, user, path]);
+
+  const handleAddComment = useCallback(async (goalId, comment) => {
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    
+    const commentObj = { 
+      authorId: user.uid, 
+      authorName: user.displayName || user.email, 
+      text: comment, 
+      timestamp: new Date(),
+      authorPhotoURL: user.photoURL || null
+    };
+    
+    // ✅ FIX: Added try/catch — previously silent failure
+    try {
+      await updateDoc(doc(db, path, goalId), {
+        comments: arrayUnion(commentObj),
+        updatedAt: serverTimestamp(),
+      });
+
+      await sendNotificationToOthers(
+        user.uid,
+        goal.participants || [],
+        `${user.displayName || user.email} commented on "${goal.title}"`,
+        { 
+          goalId: goal.id,
+          goalTitle: goal.title,
+          comment: comment.substring(0, 50) + (comment.length > 50 ? "..." : "")
+        },
+        {
+          type: NOTIFICATION_TYPES?.COMMENT,
+          pushTitle: '💬 New Comment',
+          senderName: user.displayName || user.email,
+        }
+      );
+    } catch (error) {
+      console.error("Add comment error:", error);
+      Alert.alert("Error", "Failed to post comment. Please try again.");
+      throw error; // Re-throw so optimistic UI can revert
+    }
+  }, [goals, user, path]);
+
+  const handleAddMilestone = useCallback(async (goalId, title, dueDate = null) => {
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    if (!title?.trim()) return;
+    
+    const milestone = { 
+      title: title.trim(), 
+      completed: false, 
+      createdAt: new Date(), 
+      dueDate,
+      completedBy: null 
+    };
+    
+    // ✅ FIX: Added try/catch — previously silent failure
+    try {
+      await updateDoc(doc(db, path, goalId), {
+        milestones: arrayUnion(milestone),
+        updatedAt: serverTimestamp(),
+      });
+
+      await sendNotificationToOthers(
+        user.uid,
+        goal.participants || [],
+        `${user.displayName || user.email} added milestone: "${title.trim()}"`,
+        { 
+          goalId: goal.id,
+          goalTitle: goal.title,
+          milestoneTitle: title.trim()
+        },
+        {
+          type: NOTIFICATION_TYPES?.MILESTONE_ADDED,
+          pushTitle: '🎯 New Milestone',
+          senderName: user.displayName || user.email,
+        }
+      );
+
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (error) {
+      console.error("Add milestone error:", error);
+      Alert.alert("Error", "Failed to add milestone. Please try again.");
+    }
+  }, [goals, user, path]);
+
+  const handleToggleMilestone = useCallback(async (goalId, index) => {
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    
+    const milestoneList = [...(goal.milestones || [])];
+    if (!milestoneList[index]) return;
+
+    const isCompleting = !milestoneList[index].completed;
+    
+    milestoneList[index] = {
+      ...milestoneList[index],
+      completed: isCompleting,
+      completedBy: isCompleting ? user.uid : null,
+      completedAt: isCompleting ? new Date() : null,
+    };
+
+    // Check if this completes the goal
+    const completedCount = milestoneList.filter(m => m.completed).length;
+    const progress = Math.round((completedCount / milestoneList.length) * 100);
+    const isGoalCompleted = progress >= 100;
+
+    // ✅ FIX: Added try/catch — previously silent failure
+    try {
+      await updateDoc(doc(db, path, goalId), {
+        milestones: milestoneList,
+        // ✅ ADDED: Mark notification as sent if goal is completed
+        notificationSent: isGoalCompleted ? true : goal.notificationSent,
+        notificationSentAt: isGoalCompleted ? new Date() : goal.notificationSentAt,
+        updatedAt: serverTimestamp(),
+      });
+
+      if (isCompleting) {
+        await sendNotificationToOthers(
+          user.uid,
+          goal.participants || [],
+          `${user.displayName || user.email} completed milestone: "${milestoneList[index].title}"`,
+          { 
+            goalId: goal.id,
+            goalTitle: goal.title,
+            milestoneTitle: milestoneList[index].title
+          },
+          {
+            type: NOTIFICATION_TYPES?.MILESTONE_COMPLETED,
+            pushTitle: '🏆 Milestone Completed!',
+            senderName: user.displayName || user.email,
+          }
+        );
+        
+        if (isGoalCompleted) {
+          await sendNotificationToOthers(
+            user.uid,
+            goal.participants || [],
+            `🎉 Goal "${goal.title}" has been 100% completed!`,
+            { 
+              goalId: goal.id,
+              goalTitle: goal.title
+            },
+            {
+              type: NOTIFICATION_TYPES?.GOAL_COMPLETED,
+              pushTitle: '🎉 Goal Completed!',
+              senderName: user.displayName || user.email,
+            }
+          );
+        }
+        
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      console.error("Toggle milestone error:", error);
+      Alert.alert("Error", "Failed to update milestone. Please try again.");
+    }
+  }, [goals, user, path]);
+
+  const handleEditGoal = useCallback(async (goalId, updatedData) => {
+    // ✅ FIX: Added try/catch — previously silent failure
+    try {
+      await updateDoc(doc(db, path, goalId), {
+        title: updatedData.title.trim(),
+        description: updatedData.description.trim(),
+        dueDate: updatedData.dueDate,
+        targetValue: parseInt(updatedData.targetValue) || 0,
+        unit: updatedData.unit.trim(),
+        priority: updatedData.priority,
+        category: updatedData.category,
+        // ✅ ADDED: Reset notification flags when goal is updated
+        notificationSent: false,
+        notificationSentAt: null,
+        updatedAt: serverTimestamp(),
+      });
+
+      const goal = goals.find(g => g.id === goalId);
+      if (goal) {
+        await sendNotificationToOthers(
+          user.uid,
+          goal.participants?.filter(uid => uid !== user.uid) || [],
+          `✏️ ${user.displayName || user.email} updated the goal`,
+          { 
+            goalId,
+            goalTitle: goal.title,
+          },
+          {
+            type: NOTIFICATION_TYPES?.GOAL_UPDATED,
+            pushTitle: '✏️ Goal Updated',
+            senderName: user.displayName || user.email,
+          }
+        );
+      }
+    } catch (error) {
+      console.error("Edit goal error:", error);
+      Alert.alert("Error", "Failed to update goal. Please try again.");
+      throw error; // Re-throw so edit form can stay open
+    }
+  }, [goals, user, path]);
+
+  const handleDeleteGoal = useCallback(async (goal) => {
+    Alert.alert(
+      goal.isOwner ? "Delete Shared Goal" : "Remove Shared Goal",
+      goal.isOwner 
+        ? `Are you sure you want to delete "${goal.title}"?`
+        : `Remove "${goal.title}" from your shared goals?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: goal.isOwner ? "Delete" : "Remove",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // ✅ FIX: Delete FIRST, then notify.
+              // Previously notifications fired before the delete — if delete
+              // failed, participants got a "goal deleted" alert but goal still existed.
+              await deleteDoc(doc(db, path, goal.id));
+
+              if (goal.isOwner) {
+                await sendNotificationToOthers(
+                  user.uid,
+                  goal.participants?.filter(uid => uid !== user.uid) || [],
+                  `The goal "${goal.title}" was deleted by ${user.displayName || user.email}`,
+                  { 
+                    goalId: goal.id,
+                    goalTitle: goal.title
+                  },
+                  {
+                    type: NOTIFICATION_TYPES?.GOAL_DELETED,
+                    pushTitle: '🗑️ Goal Deleted',
+                    senderName: user.displayName || user.email,
+                  }
+                );
+              }
+
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert(goal.isOwner ? "🗑️ Goal deleted" : "✅ Goal removed");
+            } catch (error) {
+              console.error("Delete error:", error);
+              Alert.alert("Error", "Failed to delete goal");
+            }
+          }
+        }
+      ]
+    );
+  }, [user, path]);
+
+  const handleQuickAdd = async ({ title, dueDate }) => {
+    if (!user) return;
+    
+    try {
+      const docRef = await addDoc(collection(db, path), {
+        title,
+        description: "",
+        dueDate,
+        ownerId: user.uid,
+        creatorId: user.uid,
+        participants: [user.uid],
+        participantDetails: [{
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          email: user.email,
+          role: "owner"
+        }],
+        milestones: [],
+        comments: [],
+        contributions: { [user.uid]: 0 },
+        currentValue: 0,
+        targetValue: 100,
+        unit: "",
+        priority: "medium",
+        category: "social",
+        // ✅ ADDED: Notification flags for cloud function
+        notificationSent: false,
+        notificationSentAt: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        activity: [{
+          type: "created",
+          actorId: user.uid,
+          message: `${user.displayName || user.email} created this goal`,
+          timestamp: new Date()
+        }],
+      });
       
-      <Text style={styles.label}>Title *</Text>
-      <TextInput 
-        style={styles.input} 
-        value={editTitle} 
-        onChangeText={setEditTitle} 
-        placeholder="Goal title" 
-      />
+      Alert.alert("✨ Success", "Shared goal created! Add collaborators to start collaborating.");
+    } catch (error) {
+      console.error("Quick add error:", error);
+      Alert.alert("Error", "Failed to create shared goal");
+    }
+  };
 
-      <Text style={styles.label}>Description</Text>
-      <TextInput 
-        style={[styles.input, {height: 80}]} 
-        value={editDescription} 
-        onChangeText={setEditDescription} 
-        multiline 
-        placeholder="Describe your goal..." 
-      />
+  const openGoalDetail = useCallback((goal) => {
+    setSelectedDetailGoal(goal);
+    setDetailModalVisible(true);
+  }, []);
 
-      <View style={styles.row}>
-        <View style={{flex: 1}}>
-          <Text style={styles.label}>Target</Text>
-          <TextInput 
-            style={styles.input} 
-            value={editTargetValue} 
-            onChangeText={setEditTargetValue} 
-            keyboardType="numeric" 
-            placeholder="100" 
-          />
-        </View>
-        <View style={{flex: 1}}>
-          <Text style={styles.label}>Unit</Text>
-          <TextInput 
-            style={styles.input} 
-            value={editUnit} 
-            onChangeText={setEditUnit} 
-            placeholder="km, books..." 
-          />
-        </View>
-      </View>
+  const clearSearch = () => {
+    setSearchQuery("");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
 
-      {/* FIX: Use CustomDateTimePicker for better UX */}
-      <Text style={styles.label}>Due Date</Text>
-      <CustomDateTimePicker 
-        value={editDueDate} 
-        onChange={setEditDueDate}
-        minimumDate={new Date()}
-      />
+  const canManageRoles = useCallback((goal) => {
+    if (!goal || !user?.uid) return false;
+    return goal.ownerId === user.uid || goal.creatorId === user.uid;
+  }, [user]);
 
-      <Text style={styles.label}>Priority</Text>
-      <View style={styles.priorityOptions}>
-        {['low', 'medium', 'high', 'urgent'].map((p) => (
-          <TouchableOpacity
-            key={p}
-            style={[
-              styles.priorityOption,
-              editPriority === p && styles.priorityOptionSelected
-            ]}
-            onPress={() => setEditPriority(p)}
-          >
-            <Text style={[
-              styles.priorityOptionText,
-              editPriority === p && styles.priorityOptionTextSelected
-            ]}>
-              {p.charAt(0).toUpperCase() + p.slice(1)}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+  const handleRemoveParticipant = useCallback(async (goalId, participantUid) => {
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    
+    try {
+      await updateDoc(doc(db, path, goalId), {
+        participants: arrayRemove(participantUid),
+        participantDetails: (goal.participantDetails || []).filter(p => p.uid !== participantUid),
+        updatedAt: serverTimestamp(),
+      });
+      
+      await sendNotificationToOthers(
+        user.uid,
+        [participantUid],
+        `You were removed from the goal "${goal.title}"`,
+        { 
+          goalId: goal.id,
+          goalTitle: goal.title
+        },
+        {
+          type: NOTIFICATION_TYPES?.PARTICIPANT_REMOVED,
+          pushTitle: '👋 Removed from Goal',
+          senderName: user.displayName || user.email,
+        }
+      );
+      
+      Alert.alert("Success", "Participant removed");
+    } catch (error) {
+      console.error("Remove participant error:", error);
+      Alert.alert("Error", "Failed to remove participant");
+    }
+  }, [goals, user, path]);
 
-      <Text style={styles.label}>Category</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesScroll}>
-        <View style={styles.categoriesContainer}>
-          {['health', 'work', 'education', 'personal', 'financial', 'social', 'other'].map((cat) => (
-            <CategoryChip
-              key={cat}
-              category={cat}
-              selected={editCategory === cat}
-              onPress={() => setEditCategory(cat)}
-            />
-          ))}
-        </View>
-      </ScrollView>
-
-      {/* Add Collaborators Section in Edit Form */}
-      {canManageRoles(selectedGoal) && (
-        <>
-          <Text style={styles.sectionTitle}>Add Collaborators</Text>
-          <Text style={styles.label}>Invite by Email</Text>
-          <View style={styles.inputGroup}>
-            <TextInput 
-              style={[styles.input, {flex: 1}]} 
-              value={editCollabEmail} 
-              onChangeText={setEditCollabEmail}
-              placeholder="friend@example.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <TouchableOpacity 
-              style={[
-                styles.addBtn,
-                (!editCollabEmail.trim() || editCollabLoading) && { opacity: 0.5 }
-              ]}
-              onPress={handleAddCollaboratorToExistingGoal}
-              disabled={!editCollabEmail.trim() || editCollabLoading}
-            >
-              {editCollabLoading ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Ionicons name="person-add" size={20} color="#fff" />
-              )}
-            </TouchableOpacity>
-          </View>
-        </>
-      )}
-
-      <View style={styles.editActions}>
-        <TouchableOpacity 
-          style={[styles.btn, styles.cancelBtn]} 
-          onPress={handleCancelEdit}
-        >
-          <Text style={styles.cancelBtnText}>Cancel</Text>
-        </TouchableOpacity>
-        <TouchableOpacity 
-          style={[styles.btn, styles.saveBtn]} 
-          onPress={handleSaveEdit}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.saveBtnText}>Save Changes</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-    </Animated.View>
+  const renderGoalItem = ({ item }) => (
+    <SharedGoalCard
+      goal={item}
+      onPress={openGoalDetail} // ✅ Opens detail modal, NOT edit
+      onEdit={() => openGoalDetail(item)} // ✅ Long press still opens detail (can edit from there)
+      onDelete={handleDeleteGoal}
+      onAddProgress={handleAddProgress}
+      onToggleMilestone={handleToggleMilestone}
+      isExpanded={expandedGoalId === item.id}
+      onExpand={(id) => setExpandedGoalId(expandedGoalId === id ? null : id)}
+    />
   );
 
-  const renderProgressSection = () => (
-    <View>
-      {/* Progress Input Card */}
-      <View style={styles.progressInputCard}>
-        <Text style={styles.sectionTitle}>Add Progress</Text>
-        <Text style={styles.progressHelpText}>
-          Current: {selectedGoal?.currentValue || 0} {selectedGoal?.unit} • 
-          Target: {selectedGoal?.targetValue || 0} {selectedGoal?.unit}
-        </Text>
-        
-        <View style={styles.progressInputContainer}>
-          <View style={styles.progressInputWrapper}>
-            <TextInput 
-              style={styles.progressInput} 
-              value={progressInput} 
-              onChangeText={setProgressInput} 
-              placeholder="Enter amount" 
-              keyboardType="numeric" 
-            />
-            <Text style={styles.unitText}>{selectedGoal?.unit}</Text>
-          </View>
-          <TouchableOpacity 
-            style={[
-              styles.progressAddButton,
-              (!progressInput.trim() || isNaN(parseInt(progressInput))) && styles.progressAddButtonDisabled
-            ]} 
-            onPress={handleAddProgress}
-            disabled={!progressInput.trim() || isNaN(parseInt(progressInput))}
-          >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Ionicons name="add-circle" size={24} color="#fff" />
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
+  /* ================================================================================
+     🎨 RENDER
+     ================================================================================ */
 
-      {/* Milestones Section */}
-      <View style={styles.milestonesCard}>
-        <Text style={styles.sectionTitle}>Milestones</Text>
-        <Text style={styles.progressHelpText}>
-          Track smaller achievements towards your goal
-        </Text>
-        
-        <View style={styles.milestoneInputContainer}>
-          <TextInput 
-            style={styles.milestoneInput} 
-            value={milestoneInput} 
-            onChangeText={setMilestoneInput} 
-            placeholder="Add a new milestone..." 
-          />
-          {/* FIX: Use CustomDateTimePicker for milestone due date */}
-          <CustomDateTimePicker 
-            value={milestoneDueDate || new Date()}
-            onChange={setMilestoneDueDate}
-            minimumDate={new Date()}
-            style={styles.milestoneDateButton}
-          />
-          <TouchableOpacity 
-            style={[
-              styles.milestoneAddButton,
-              !milestoneInput.trim() && styles.milestoneAddButtonDisabled
-            ]} 
-            onPress={handleAddMilestone}
-            disabled={!milestoneInput.trim()}
-          >
-            <Ionicons name="add" size={20} color="#fff" />
-          </TouchableOpacity>
-        </View>
+  const headerHeight = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [Platform.OS === 'ios' ? 140 : 120, 100],
+    extrapolate: 'clamp',
+  });
 
-        {milestoneDueDate && (
-          <Text style={styles.milestoneDueDateText}>
-            Due: {milestoneDueDate.toLocaleDateString()}
-          </Text>
-        )}
+  const headerTitleSize = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [28, 24],
+    extrapolate: 'clamp',
+  });
 
-        <View style={styles.milestonesList}>
-          {/* Optimistic milestones */}
-          {optimisticMilestones.map((m, index) => (
-            <View key={m.id} style={[styles.milestoneItem, styles.milestoneItemPending]}>
-              <View style={styles.milestoneCheckbox}>
-                <ActivityIndicator size="small" color={COLORS.softText} />
-              </View>
-              <View style={styles.milestoneContent}>
-                <Text style={styles.milestoneText}>{m.title}</Text>
-                {m.dueDate && (
-                  <Text style={styles.milestoneDate}>
-                    Due: {m.dueDate.toLocaleDateString()}
-                  </Text>
-                )}
-                <Text style={styles.pendingText}>Adding...</Text>
-              </View>
-            </View>
-          ))}
-          
-          {/* Actual milestones from real-time data */}
-          {milestones.map((m, index) => (
-            <TouchableOpacity 
-              key={index} 
-              style={[
-                styles.milestoneItem,
-                m && m.completed && styles.milestoneItemCompleted
-              ]} 
-              onPress={() => handleToggleMilestone(index)}
-            >
-              <View style={styles.milestoneCheckbox}>
-                <Ionicons 
-                  name={m && m.completed ? "checkmark-circle" : "ellipse-outline"} 
-                  size={24} 
-                  color={m && m.completed ? COLORS.success : COLORS.softText} 
-                />
-              </View>
-              <View style={styles.milestoneContent}>
-                <Text style={[
-                  styles.milestoneText,
-                  m && m.completed && styles.milestoneTextCompleted
-                ]}>
-                  {m?.title || 'Unnamed Milestone'}
-                </Text>
-                <View style={styles.milestoneMeta}>
-                  {m?.dueDate && (
-                    <Text style={styles.milestoneDate}>
-                      Due: {formatDate(m.dueDate)}
-                    </Text>
-                  )}
-                  {m?.completedAt && (
-                    <Text style={styles.milestoneDate}>
-                      Completed {formatCommentDate(m.completedAt)}
-                    </Text>
-                  )}
-                </View>
-              </View>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-    </View>
-  );
-
-  const renderDiscussionSection = () => (
-    <View>
-      <View style={styles.commentInputCard}>
-        <Text style={styles.sectionTitle}>Discussion</Text>
-        <View style={styles.commentInputContainer}>
-          <UserAvatar user={user} size={36} />
-          <View style={styles.commentInputWrapper}>
-            <TextInput 
-              ref={commentInputRef}
-              style={styles.commentInput} 
-              value={commentInput} 
-              onChangeText={setCommentInput} 
-              placeholder="Write a comment..." 
-              multiline
-              onSubmitEditing={handleAddComment}
-            />
-            <TouchableOpacity 
-              style={[
-                styles.commentSendButton,
-                !commentInput.trim() && styles.commentSendButtonDisabled
-              ]} 
-              onPress={handleAddComment}
-              disabled={!commentInput.trim()}
-            >
-              <Ionicons name="send" size={18} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.commentsList}>
-        {/* Optimistic comments */}
-        {optimisticComments.map((comment) => (
-          <View key={comment.id} style={[styles.commentItem, styles.commentItemPending]}>
-            <UserAvatar user={comment} size={40} />
-            <View style={styles.commentContent}>
-              <View style={styles.commentHeader}>
-                <Text style={styles.commentAuthor}>{comment.authorName}</Text>
-                <Text style={styles.commentTime}>Sending...</Text>
-              </View>
-              <Text style={styles.commentText}>{comment.text}</Text>
-              <ActivityIndicator size="small" color={COLORS.softText} style={styles.pendingIndicator} />
-            </View>
-          </View>
-        ))}
-        
-        {/* Actual comments from real-time data */}
-        {comments.map((c, idx) => (
-          <View key={idx} style={styles.commentItem}>
-            <UserAvatar user={c} size={40} />
-            <View style={styles.commentContent}>
-              <View style={styles.commentHeader}>
-                <Text style={styles.commentAuthor}>{c.authorName}</Text>
-                <Text style={styles.commentTime}>
-                  {formatCommentDate(c.timestamp)}
-                </Text>
-              </View>
-              <Text style={styles.commentText}>{c.text}</Text>
-            </View>
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-
-  const renderOverview = () => (
-    <View>
-      {/* Progress & Summary */}
-      <View style={styles.summaryCard}>
-        <ProgressRing size={80} progress={selectedGoal ? computeProgress(selectedGoal) : 0} />
-        <View style={styles.summaryContent}>
-          <Text style={styles.summaryTitle}>Progress Overview</Text>
-          <Text style={styles.summaryValue}>
-            {selectedGoal?.currentValue || 0} / {selectedGoal?.targetValue || 0} {selectedGoal?.unit}
-          </Text>
-          <Text style={styles.summaryDescription}>{selectedGoal?.description}</Text>
-          
-          <View style={styles.summaryMeta}>
-            <View style={styles.metaItem}>
-              <Ionicons name="calendar-outline" size={16} color={COLORS.softText} />
-              <Text style={styles.metaText}>
-                {selectedGoal?.dueDate ? formatDate(selectedGoal.dueDate) : 'No deadline'}
-              </Text>
-            </View>
-            <View style={styles.metaItem}>
-              <Ionicons name="flag-outline" size={16} color={COLORS.softText} />
-              <Text style={styles.metaText}>{selectedGoal?.priority}</Text>
-            </View>
-          </View>
-        </View>
-      </View>
-
-      {/* Quick Actions */}
-      <View style={styles.quickActions}>
-        <TouchableOpacity style={styles.quickAction} onPress={() => setActiveTab('progress')}>
-          <Ionicons name="trending-up" size={24} color={COLORS.warm} />
-          <Text style={styles.quickActionText}>Add Progress</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickAction} onPress={() => setActiveTab('discussion')}>
-          <Ionicons name="chatbubble-outline" size={24} color={COLORS.warm} />
-          <Text style={styles.quickActionText}>Discussion</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickAction} onPress={handleEditToggle}>
-          <Ionicons name="create-outline" size={24} color={COLORS.warm} />
-          <Text style={styles.quickActionText}>Edit Goal</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Participants Section */}
-      <Text style={styles.sectionTitle}>Participants</Text>
-      <View style={styles.participantsList}>
-        {(selectedGoal?.participantDetails || []).map((p, idx) => (
-          <View key={idx} style={styles.participantItem}>
-            <UserAvatar user={p} size={44} />
-            <View style={styles.participantInfo}>
-              <Text style={styles.participantName}>{p.displayName}</Text>
-              <Text style={styles.participantEmail}>{p.email}</Text>
-            </View>
-            <View style={styles.participantRole}>
-              <Text style={[
-                styles.roleText,
-                p.role === 'owner' && { color: COLORS.warm },
-                p.role === 'admin' && { color: COLORS.info }
-              ]}>
-                {p.role}
-              </Text>
-            </View>
-            {canManageRoles(selectedGoal) && p.uid !== selectedGoal.ownerId && (
-              <TouchableOpacity 
-                style={styles.removeParticipantBtn}
-                onPress={() => handleRemoveParticipant(p.uid)}
-              >
-                <Ionicons name="close-circle" size={20} color={COLORS.error} />
-              </TouchableOpacity>
-            )}
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-
-  /* -------------------- Render -------------------- */
   return (
     <SafeAreaView style={styles.screen}>
-      {/* Offline banner */}
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundBase} />
+      
       {isOffline && (
         <View style={styles.offlineBanner}>
           <Ionicons name="cloud-offline" size={16} color="#9A4B00" />
           <Text style={styles.offlineText}>
-            {isOffline ? "You are offline — changes will sync when you're back online" : "Back online - syncing changes"}
+            You are offline — changes will sync when you're back online
           </Text>
         </View>
       )}
 
-      <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.title}>Group Goals</Text>
-          <Text style={styles.subtitle}>Collaborate and achieve together</Text>
+      <Animated.View style={[styles.header, { height: headerHeight }]}>
+        <LinearGradient
+          colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+          style={StyleSheet.absoluteFill}
+        />
+        
+        <View style={styles.headerContent}>
+          <View style={styles.headerTop}>
+            <View>
+              <Animated.Text style={[styles.headerTitle, { fontSize: headerTitleSize }]}>
+                Shared Goals
+              </Animated.Text>
+              <Text style={styles.headerSubtitle}>
+                {goals.length} {goals.length === 1 ? 'goal' : 'goals'}
+              </Text>
+            </View>
+            
+            <View style={styles.headerRight}>
+              <View style={styles.viewModeToggle}>
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'list' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('list')}
+                >
+                  <Ionicons 
+                    name="list" 
+                    size={20} 
+                    color={viewMode === 'list' ? COLORS.shared : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'grid' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('grid')}
+                >
+                  <Ionicons 
+                    name="grid" 
+                    size={20} 
+                    color={viewMode === 'grid' ? COLORS.shared : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
+              </View>
+              
+              <NotificationCenter />
+              
+              <TouchableOpacity 
+                style={styles.addButton}
+                onPress={() => { resetCreateForm(); setCreateVisible(true); }}
+              >
+                <LinearGradient
+                  colors={[COLORS.shared, COLORS.accentBlush]}
+                  style={styles.addButtonGradient}
+                >
+                  <Ionicons name="add" size={24} color="white" />
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+          
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={18} color={COLORS.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search shared goals..."
+              placeholderTextColor={COLORS.placeholder}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery ? (
+              <TouchableOpacity onPress={clearSearch}>
+                <Ionicons name="close-circle" size={18} color={COLORS.textTertiary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <NotificationCenter />
-          <TouchableOpacity style={styles.plus} onPress={() => setCreateVisible(true)}>
-            <Ionicons name="add" size={22} color={COLORS.card} />
+      </Animated.View>
+      
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.categoryScroll}
+        contentContainerStyle={styles.categoryContainer}
+      >
+        <TouchableOpacity
+          style={[
+            styles.categoryFilter,
+            selectedCategory === 'all' && styles.categoryFilterActive,
+          ]}
+          onPress={() => {
+            setSelectedCategory('all');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+        >
+          <Text
+            style={[
+              styles.categoryFilterText,
+              selectedCategory === 'all' && styles.categoryFilterTextActive,
+            ]}
+          >
+            All
+          </Text>
+        </TouchableOpacity>
+        
+        {Object.entries(CATEGORIES).map(([key, config]) => (
+          <TouchableOpacity
+            key={key}
+            style={[
+              styles.categoryFilter,
+              { backgroundColor: selectedCategory === key ? config.color : COLORS.card },
+              selectedCategory === key && styles.categoryFilterActive,
+            ]}
+            onPress={() => {
+              setSelectedCategory(key);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Ionicons
+              name={config.icon}
+              size={16}
+              color={selectedCategory === key ? 'white' : config.color}
+            />
+            <Text
+              style={[
+                styles.categoryFilterText,
+                { color: selectedCategory === key ? 'white' : config.color },
+              ]}
+            >
+              {config.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      
+      {loading && !refreshing ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={COLORS.shared} />
+          <Text style={styles.loadingText}>Loading shared goals...</Text>
+        </View>
+      ) : filteredGoals.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Ionicons name="people-outline" size={64} color={COLORS.textTertiary} />
+          <Text style={styles.emptyTitle}>
+            {searchQuery ? "No goals found" : "No shared goals yet"}
+          </Text>
+          <Text style={styles.emptyText}>
+            {searchQuery 
+              ? "Try a different search term" 
+              : "Create a shared goal to collaborate with others"}
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyButton}
+            onPress={() => { resetCreateForm(); setCreateVisible(true); }}
+          >
+            <LinearGradient
+              colors={[COLORS.shared, COLORS.accentBlush]}
+              style={styles.emptyButtonGradient}
+            >
+              <Ionicons name="add" size={20} color="white" />
+              <Text style={styles.emptyButtonText}>Create Shared Goal</Text>
+            </LinearGradient>
           </TouchableOpacity>
         </View>
-      </View>
-
-      {loading && !refreshing ? (
-        <ActivityIndicator style={{ marginTop: 28 }} size="large" color={COLORS.warm} />
       ) : (
-        <FlatList 
-          data={goals.slice().sort((a,b) => (b.updatedAt?.seconds||0) - (a.updatedAt?.seconds||0))}
-          keyExtractor={(i) => i.id}
-          contentContainerStyle={{ padding: 16 }}
-          renderItem={({item}) => <GoalCard item={item} />}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Ionicons name="people-outline" size={64} color={COLORS.border} />
-              <Text style={styles.emptyTitle}>No shared goals yet</Text>
-              <Text style={styles.emptyText}>
-                {collaborators.length > 0 
-                  ? "Create or get invited to a shared goal to start collaborating!" 
-                  : "Create your first shared goal or ask to join an existing one!"}
-              </Text>
-              <TouchableOpacity 
-                style={styles.createFirstButton}
-                onPress={() => setCreateVisible(true)}
-              >
-                <Text style={styles.createFirstButtonText}>Create Shared Goal</Text>
-              </TouchableOpacity>
-            </View>
-          }
-          refreshing={refreshing}
-          onRefresh={() => setRefreshing(true)}
+        <FlatList
+          ref={flatListRef}
+          data={filteredGoals}
+          renderItem={renderGoalItem}
+          keyExtractor={(item) => item.id}
+          numColumns={viewMode === 'grid' ? 2 : 1}
+          key={viewMode}
+          contentContainerStyle={styles.goalsListContent}
+          showsVerticalScrollIndicator={false}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: false }
+          )}
+          scrollEventThrottle={16}
+          ListFooterComponent={<View style={{ height: 100 }} />}
         />
       )}
-
-      {/* Enhanced Detail Modal */}
-      <Modal visible={detailVisible} animationType="slide" onRequestClose={() => setDetailVisible(false)}>
-        <SafeAreaView style={{flex: 1, backgroundColor: COLORS.background}}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setDetailVisible(false)}>
-              <Ionicons name="arrow-back" size={24} color={COLORS.text} />
-            </TouchableOpacity>
-            <Text style={styles.modalTitle} numberOfLines={1}>
-              {isEditing ? 'Edit Goal' : selectedGoal?.title}
-            </Text>
-            <View style={{flexDirection: 'row', gap: 12}}>
-              {!isEditing && selectedGoal?.ownerId === user.uid && (
-                <TouchableOpacity onPress={handleEditToggle}>
-                  <Ionicons name="create-outline" size={22} color={COLORS.warm} />
-                </TouchableOpacity>
-              )}
-              {!isEditing && selectedGoal?.ownerId === user.uid && (
-                <TouchableOpacity onPress={handleDeleteGoal}>
-                  <Ionicons name="trash-outline" size={22} color={COLORS.error} />
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-
-          <ScrollView 
-            contentContainerStyle={styles.modalContent}
-            showsVerticalScrollIndicator={false}
+      
+      {viewMode === 'list' && !loading && filteredGoals.length > 0 && (
+        <QuickAddBar onAdd={handleQuickAdd} />
+      )}
+      
+      {/* CREATE MODAL */}
+      <Modal 
+        visible={createVisible} 
+        animationType="slide" 
+        onRequestClose={() => setCreateVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+          
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalKeyboard}
           >
-            {isEditing ? (
-              renderEditForm()
-            ) : (
-              <>
-                {/* Tab Navigation */}
-                <View style={styles.tabContainer}>
-                  {['overview', 'progress', 'discussion'].map((tab) => (
+            <View style={styles.modalContainer}>
+              <View style={styles.modalHeader}>
+                <TouchableOpacity
+                  onPress={() => { setCreateVisible(false); resetCreateForm(); }}
+                  style={styles.modalCancelButton}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                
+                <Text style={styles.modalTitle}>Create Shared Goal</Text>
+                
+                <TouchableOpacity
+                  onPress={handleCreateSharedGoal}
+                  disabled={loading}
+                  style={styles.modalDoneButton}
+                >
+                  {loading ? (
+                    <ActivityIndicator size="small" color={COLORS.shared} />
+                  ) : (
+                    <Text style={styles.modalDoneText}>Create</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+              
+              <ScrollView contentContainerStyle={styles.modalScrollContent}>
+                <View style={styles.formSection}>
+                  <View style={styles.formLabelRow}>
+                    <Text style={styles.formLabel}>Title <Text style={styles.requiredStar}>*</Text></Text>
+                    <Text style={styles.formCounter}>{createForm.title.length}/120</Text>
+                  </View>
+                  <View style={styles.formInputContainer}>
+                    <Ionicons name="people-outline" size={20} color={COLORS.shared} />
+                    <TextInput 
+                      style={styles.formInput}
+                      value={createForm.title} 
+                      onChangeText={(text) => setCreateForm(prev => ({ ...prev, title: text }))}
+                      placeholder="e.g., Team Project, Family Trip"
+                      placeholderTextColor={COLORS.placeholder}
+                      maxLength={120}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.formSection}>
+                  <View style={styles.formLabelRow}>
+                    <Text style={styles.formLabel}>Description</Text>
+                    <Text style={styles.formCounter}>{createForm.description.length}/500</Text>
+                  </View>
+                  <View style={[styles.formInputContainer, styles.formTextArea]}>
+                    <Ionicons name="document-text-outline" size={20} color={COLORS.shared} />
+                    <TextInput 
+                      style={[styles.formInput, { minHeight: 80 }]}
+                      value={createForm.description} 
+                      onChangeText={(text) => setCreateForm(prev => ({ ...prev, description: text }))}
+                      multiline 
+                      placeholder="What's this goal about?"
+                      placeholderTextColor={COLORS.placeholder}
+                      maxLength={500}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.formRow}>
+                  <View style={[styles.formSection, { flex: 1, marginRight: 8 }]}>
+                    <Text style={styles.formLabel}>Target</Text>
+                    <View style={styles.formInputContainer}>
+                      <Ionicons name="flag-outline" size={20} color={COLORS.shared} />
+                      <TextInput 
+                        style={styles.formInput}
+                        value={createForm.targetValue} 
+                        onChangeText={(text) => setCreateForm(prev => ({ ...prev, targetValue: text }))}
+                        keyboardType="numeric" 
+                        placeholder="100"
+                        placeholderTextColor={COLORS.placeholder}
+                      />
+                    </View>
+                  </View>
+                  <View style={[styles.formSection, { flex: 1, marginLeft: 8 }]}>
+                    <Text style={styles.formLabel}>Unit</Text>
+                    <View style={styles.formInputContainer}>
+                      <Ionicons name="analytics-outline" size={20} color={COLORS.shared} />
+                      <TextInput 
+                        style={styles.formInput}
+                        value={createForm.unit} 
+                        onChangeText={(text) => setCreateForm(prev => ({ ...prev, unit: text }))}
+                        placeholder="km, books..."
+                        placeholderTextColor={COLORS.placeholder}
+                      />
+                    </View>
+                  </View>
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Due Date & Time</Text>
+                  <View style={styles.formDateTimeRow}>
                     <TouchableOpacity
-                      key={tab}
-                      style={[
-                        styles.tab,
-                        activeTab === tab && styles.tabActive
-                      ]}
-                      onPress={() => setActiveTab(tab)}
+                      style={[styles.formDateTimeButton, { flex: 1, marginRight: 8 }]}
+                      onPress={() => {
+                        setTempCreateDate(createForm.dueDate || new Date());
+                        setShowCreateDatePicker(true);
+                      }}
                     >
-                      <Text style={[
-                        styles.tabText,
-                        activeTab === tab && styles.tabTextActive
-                      ]}>
-                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                      <Ionicons name="calendar-outline" size={20} color={COLORS.shared} />
+                      <Text style={styles.formDateTimeText}>
+                        {createForm.dueDate.toLocaleDateString('en-US', { 
+                          month: 'short', 
+                          day: 'numeric', 
+                          year: 'numeric' 
+                        })}
                       </Text>
                     </TouchableOpacity>
-                  ))}
+                    
+                    <TouchableOpacity
+                      style={[styles.formDateTimeButton, { flex: 1, marginLeft: 8 }]}
+                      onPress={() => {
+                        setTempCreateDate(createForm.dueDate || new Date());
+                        setShowCreateTimePicker(true);
+                      }}
+                    >
+                      <Ionicons name="time-outline" size={20} color={COLORS.shared} />
+                      <Text style={styles.formDateTimeText}>
+                        {createForm.dueDate.toLocaleTimeString('en-US', { 
+                          hour: '2-digit', 
+                          minute: '2-digit' 
+                        })}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
-                {/* Tab Content */}
-                {activeTab === 'overview' && renderOverview()}
-                {activeTab === 'progress' && renderProgressSection()}
-                {activeTab === 'discussion' && renderDiscussionSection()}
-              </>
-            )}
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
+                {showCreateDatePicker && (
+                  <DateTimePicker
+                    value={tempCreateDate}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={handleCreateDateChange}
+                    minimumDate={new Date()}
+                  />
+                )}
 
-      {/* Create Modal */}
-      <Modal visible={createVisible} animationType="slide" onRequestClose={() => setCreateVisible(false)}>
-        <SafeAreaView style={{flex:1, backgroundColor:COLORS.background}}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Create Group Goal</Text>
-            <TouchableOpacity onPress={() => setCreateVisible(false)}>
-              <Ionicons name="close" size={26} color={COLORS.text} />
-            </TouchableOpacity>
-          </View>
+                {showCreateTimePicker && (
+                  <DateTimePicker
+                    value={tempCreateDate}
+                    mode="time"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={handleCreateTimeChange}
+                  />
+                )}
 
-          <ScrollView contentContainerStyle={styles.modalContent}>
-            <Text style={styles.label}>Title *</Text>
-            <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="Run 100km together" />
-
-            <Text style={styles.label}>Description</Text>
-            <TextInput style={[styles.input, {height:80}]} value={description} onChangeText={setDescription} multiline placeholder="Describe goal..." />
-
-            <View style={{flexDirection:'row', gap:12, marginTop:8}}>
-              <View style={{flex:1}}>
-                <Text style={styles.label}>Target</Text>
-                <TextInput style={styles.input} value={targetValue} onChangeText={setTargetValue} keyboardType="numeric" placeholder="100" />
-              </View>
-              <View style={{flex:1}}>
-                <Text style={styles.label}>Unit</Text>
-                <TextInput style={styles.input} value={unit} onChangeText={setUnit} placeholder="km, books..." />
-              </View>
-            </View>
-
-            {/* FIX: Use CustomDateTimePicker in create modal */}
-            <Text style={styles.label}>Due date</Text>
-            <CustomDateTimePicker 
-              value={dueDate} 
-              onChange={setDueDate}
-              minimumDate={new Date()}
-            />
-
-            <Text style={styles.label}>Add collaborators (email)</Text>
-            <View style={{flexDirection:'row', alignItems:'center', gap:8}}>
-              <TextInput style={[styles.input,{flex:1}]} placeholder="person@example.com" value={collabEmail} onChangeText={setCollabEmail} autoCapitalize="none" />
-              <TouchableOpacity style={styles.addBtn} onPress={handleAddCollaboratorEmail}>
-                {collabLoading ? <ActivityIndicator color="#fff" /> : <Ionicons name="add" size={20} color="#fff" />}
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView horizontal style={{marginTop:12}}>
-              {collaborators.map(c=>(
-                <View key={c.uid} style={{alignItems:'center', marginRight:8}}>
-                  <UserAvatar user={c} size={36} />
-                  <Text style={{fontSize:12, marginTop: 4}} numberOfLines={1}>{c.displayName}</Text>
-                  <TouchableOpacity onPress={()=>handleRemoveCollaboratorLocal(c.uid)} style={{marginTop:4}}>
-                    <Ionicons name="close-circle" size={18} color={COLORS.error} />
-                  </TouchableOpacity>
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Invite Collaborators</Text>
+                  
+                  {createForm.collaborators.length > 0 && (
+                    <View style={styles.collaboratorList}>
+                      {createForm.collaborators.map((collab, idx) => (
+                        <View key={collab.uid} style={styles.collaboratorChip}>
+                          <View style={styles.collaboratorChipAvatar}>
+                            <Text style={styles.collaboratorChipText}>
+                              {collab.displayName?.charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <View style={styles.collaboratorChipInfo}>
+                            <Text style={styles.collaboratorChipName}>{collab.displayName}</Text>
+                            <Text style={styles.collaboratorChipEmail}>{collab.email}</Text>
+                          </View>
+                          <TouchableOpacity
+                            onPress={() => setCreateForm(prev => ({
+                              ...prev,
+                              collaborators: prev.collaborators.filter(c => c.uid !== collab.uid)
+                            }))}
+                          >
+                            <Ionicons name="close-circle" size={20} color={COLORS.danger} />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  
+                  <View style={styles.inviteRow}>
+                    <View style={styles.inviteInputContainer}>
+                      <Ionicons name="mail-outline" size={20} color={COLORS.shared} />
+                      <TextInput 
+                        style={styles.inviteInput}
+                        placeholder="collaborator@example.com"
+                        placeholderTextColor={COLORS.placeholder}
+                        value={createForm.collabEmail}
+                        onChangeText={(text) => setCreateForm(prev => ({ ...prev, collabEmail: text }))}
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                      />
+                    </View>
+                    <TouchableOpacity 
+                      style={styles.inviteButton}
+                      onPress={() => handleAddCollaborator(createForm.collabEmail, false)}
+                    >
+                      <Ionicons name="add" size={24} color="white" />
+                    </TouchableOpacity>
+                  </View>
+                  
+                  <Text style={styles.helperText}>
+                    Collaborators will receive push notifications when invited
+                  </Text>
                 </View>
-              ))}
-            </ScrollView>
 
-            <View style={{flexDirection:'row', justifyContent:'space-between', marginTop:20}}>
-              <TouchableOpacity style={[styles.btn,{backgroundColor:COLORS.border}]} onPress={()=>{setCreateVisible(false); resetCreateForm();}}>
-                <Text>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn,{backgroundColor:COLORS.warm}]} onPress={handleCreateSharedGoal}>
-                {loading ? <ActivityIndicator color="#fff" /> : <Text style={{color:'#fff'}}>Create</Text>}
-              </TouchableOpacity>
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Priority</Text>
+                  <View style={styles.priorityGrid}>
+                    {Object.keys(PRIORITIES).map((p) => (
+                      <TouchableOpacity
+                        key={p}
+                        style={[
+                          styles.priorityCard,
+                          createForm.priority === p && styles.priorityCardActive,
+                          { borderColor: PRIORITIES[p].color }
+                        ]}
+                        onPress={() => setCreateForm(prev => ({ ...prev, priority: p }))}
+                      >
+                        <Ionicons 
+                          name={PRIORITIES[p].icon} 
+                          size={20} 
+                          color={createForm.priority === p ? PRIORITIES[p].color : COLORS.textSecondary} 
+                        />
+                        <Text style={[
+                          styles.priorityCardText,
+                          createForm.priority === p && { color: PRIORITIES[p].color }
+                        ]}>
+                          {p.charAt(0).toUpperCase() + p.slice(1)}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Category</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={styles.categoryGrid}>
+                      {Object.keys(CATEGORIES).map((cat) => (
+                        <TouchableOpacity
+                          key={cat}
+                          style={[
+                            styles.categoryChip,
+                            { backgroundColor: createForm.category === cat ? CATEGORIES[cat].color : COLORS.card },
+                            createForm.category === cat && { borderWidth: 0 }
+                          ]}
+                          onPress={() => setCreateForm(prev => ({ ...prev, category: cat }))}
+                        >
+                          <Ionicons 
+                            name={CATEGORIES[cat].icon} 
+                            size={16} 
+                            color={createForm.category === cat ? 'white' : CATEGORIES[cat].color} 
+                          />
+                          <Text style={[
+                            styles.categoryText,
+                            { color: createForm.category === cat ? 'white' : CATEGORIES[cat].color }
+                          ]}>
+                            {CATEGORIES[cat].label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+                </View>
+              </ScrollView>
             </View>
-          </ScrollView>
-        </SafeAreaView>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
+
+      {/* DETAIL MODAL */}
+      <SharedGoalDetailModal
+        visible={detailModalVisible}
+        onClose={() => setDetailModalVisible(false)}
+        goal={selectedDetailGoal}
+        user={user}
+        path={path}
+        onAddProgress={handleAddProgress}
+        onAddComment={handleAddComment}
+        onAddMilestone={handleAddMilestone}
+        onToggleMilestone={handleToggleMilestone}
+        onEditGoal={handleEditGoal}
+        onDeleteGoal={handleDeleteGoal}
+        onAddCollaborator={handleAddCollaborator}
+        onRemoveParticipant={handleRemoveParticipant}
+        canManageRoles={canManageRoles}
+      />
     </SafeAreaView>
   );
 }
 
-/* -------------------- Enhanced Styles -------------------- */
+/* ================================================================================
+   🎨 STYLES - Complete redesign matching all screens
+   ================================================================================ */
+
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: COLORS.background },
+  screen: {
+    flex: 1,
+    backgroundColor: COLORS.backgroundBase,
+  },
+  
   offlineBanner: { 
     backgroundColor: "#FFF3E5", 
     padding: 12, 
@@ -2470,77 +3355,250 @@ const styles = StyleSheet.create({
     gap: 8
   },
   offlineText: { color: "#9A4B00", fontWeight: "600", fontSize: 14 },
-  headerRow: { 
-    paddingHorizontal: 16, 
-    paddingTop: 20, 
-    paddingBottom: 8, 
-    flexDirection: "row", 
-    justifyContent: "space-between", 
-    alignItems: "center" 
-  },
-  title: { fontSize: 28, fontWeight: "800", color: COLORS.text, letterSpacing: -0.5 },
-  subtitle: { fontSize: 16, color: COLORS.softText, marginTop: 4 },
-  plus: { 
-    backgroundColor: COLORS.warm, 
-    padding: 12, 
-    borderRadius: 20,
-    shadowColor: COLORS.warm,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4
-  },
   
-  // Card Styles
-  card: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 16, 
-    marginBottom: 12, 
-    borderWidth: 1, 
-    borderColor: COLORS.border, 
-    shadowColor: "#000", 
-    shadowOpacity: 0.08, 
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowRadius: 12, 
-    elevation: 3 
+  header: {
+    backgroundColor: COLORS.card,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    elevation: 8,
+    overflow: 'hidden',
   },
-  overdueCard: {
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.error,
+  headerContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 50 : 18,
+    paddingBottom: 16,
   },
-  dueSoonCard: {
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.warning,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  cardTitle: { fontSize: 17, fontWeight: "700", color: COLORS.text, flex: 1, marginRight: 8 },
-  cardDesc: { fontSize: 14, color: COLORS.softText, marginBottom: 12, lineHeight: 20 },
-  cardMeta: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 12,
-  },
-  cardFooter: {
+  headerTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 16,
+  },
+  headerTitle: {
+    fontWeight: '900',
+    color: COLORS.textPrimary,
+    letterSpacing: -0.5,
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  
+  viewModeToggle: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 20,
+    padding: 4,
+  },
+  viewModeButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  viewModeButtonActive: {
+    backgroundColor: COLORS.card,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  
+  addButton: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowColor: COLORS.shared,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  addButtonGradient: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+    borderWidth: 0,
+  },
+  searchInput: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  
+  categoryScroll: {
+    maxHeight: 60,
+    marginTop: 16,
+  },
+  categoryContainer: {
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  categoryFilter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 6,
+  },
+  categoryFilterActive: {
+    borderWidth: 0,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  categoryFilterText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  categoryFilterTextActive: {
+    color: 'white',
+  },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  categoryPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  
+  goalCard: {
+    marginBottom: 12,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  goalCardBlur: {
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  goalCardHeader: {
+    flexDirection: 'row',
+  },
+  goalAccent: {
+    width: 6,
+    height: '100%',
+  },
+  goalContent: {
+    flex: 1,
+    padding: 16,
+  },
+  goalTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  goalTitleContainer: {
+    flex: 1,
+    marginRight: 12,
+  },
+  goalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 6,
+  },
+  goalBadges: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  goalDescription: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
     marginTop: 8,
   },
-  metaItem: {
+  goalMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 12,
+  },
+  dueBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 4,
+  },
+  dueText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  milestoneBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
   },
-  metaText: { fontSize: 12, color: COLORS.softText },
+  milestoneBadgeText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
   
-  // Avatar
+  collaboratorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 8,
+  },
+  collaboratorText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  
+  priorityBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  priorityBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  
   avatar: {
     alignItems: "center",
     justifyContent: "center",
@@ -2548,302 +3606,88 @@ const styles = StyleSheet.create({
     borderColor: COLORS.card,
   },
   
-  // Priority & Category
-  priorityBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 4,
-  },
-  priorityText: { fontSize: 11, fontWeight: '600' },
-  categoryChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: 6,
-    marginRight: 8,
-  },
-  categoryText: { fontSize: 12, fontWeight: '600' },
-  
-  // Milestone Progress
-  milestoneProgress: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  milestoneProgressText: {
-    fontSize: 12,
-    color: COLORS.softText,
-    marginBottom: 6,
-  },
-  milestoneBar: {
-    height: 4,
-    backgroundColor: COLORS.border,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  milestoneProgressFill: {
-    height: '100%',
-    backgroundColor: COLORS.warm,
-    borderRadius: 2,
-  },
-  
-  // Modal Styles
-  modalHeader: {
+  expandedContent: {
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    borderBottomWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.card,
+    paddingBottom: 16,
   },
-  modalTitle: { fontSize: 18, fontWeight: "800", color: COLORS.text, flex: 1, textAlign: 'center' },
-  modalContent: { padding: 16, paddingBottom: 40 },
-  
-  // Edit Form
-  editForm: {
-    backgroundColor: COLORS.card,
-    padding: 16,
-    borderRadius: 16,
+  divider: {
+    height: 1,
+    backgroundColor: COLORS.cardBorder,
+    marginVertical: 12,
+  },
+  expandedSection: {
     marginBottom: 16,
   },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
-  },
-  priorityOptions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  priorityOption: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-  },
-  priorityOptionSelected: {
-    backgroundColor: COLORS.warm,
-    borderColor: COLORS.warm,
-  },
-  priorityOptionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  priorityOptionTextSelected: {
-    color: COLORS.card,
-  },
-  categoriesScroll: {
-    marginTop: 8,
-  },
-  categoriesContainer: {
-    flexDirection: 'row',
-    paddingVertical: 4,
-  },
-  editActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 20,
-  },
-  inputGroup: {
+  
+  progressInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  
-  // Tab Styles
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.card,
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 20,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  tabActive: {
-    backgroundColor: COLORS.warm,
-  },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.softText,
-  },
-  tabTextActive: {
-    color: COLORS.card,
-  },
-  
-  // Summary Card
-  summaryCard: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.card,
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 20,
-  },
-  summaryContent: {
-    flex: 1,
-    marginLeft: 16,
-  },
-  summaryTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: 8,
-  },
-  summaryValue: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: COLORS.warm,
-    marginBottom: 8,
-  },
-  summaryDescription: {
-    fontSize: 14,
-    color: COLORS.softText,
-    marginBottom: 12,
-    lineHeight: 20,
-  },
-  summaryMeta: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  
-  // Quick Actions
-  quickActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-  },
-  quickAction: {
-    alignItems: 'center',
-    backgroundColor: COLORS.card,
-    padding: 16,
-    borderRadius: 12,
-    flex: 1,
-    marginHorizontal: 6,
-  },
-  quickActionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-
-  // Progress Section
-  progressInputCard: {
-    backgroundColor: COLORS.card,
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 16,
-  },
-  progressHelpText: {
-    fontSize: 13,
-    color: COLORS.softText,
-    marginBottom: 16,
-  },
-  progressInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  progressInputWrapper: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    backgroundColor: COLORS.background,
-    overflow: 'hidden',
   },
   progressInput: {
     flex: 1,
-    padding: 12,
-    fontSize: 16,
-    color: COLORS.text,
-  },
-  unitText: {
-    paddingHorizontal: 12,
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     fontSize: 14,
-    color: COLORS.softText,
+    color: COLORS.textPrimary,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  progressButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  progressButtonGradient: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  milestonesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  milestonesTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  milestonesCount: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
     fontWeight: '600',
   },
-  progressAddButton: {
-    backgroundColor: COLORS.warm,
-    padding: 12,
-    borderRadius: 12,
+  emptyMilestones: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 20,
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
   },
-  progressAddButtonDisabled: {
-    backgroundColor: COLORS.softText,
-    opacity: 0.5,
+  emptyMilestonesText: {
+    fontSize: 13,
+    color: COLORS.textTertiary,
+    marginTop: 8,
+    marginBottom: 12,
   },
-
-  // Milestones Section
-  milestonesCard: {
-    backgroundColor: COLORS.card,
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 16,
-  },
-  milestoneInputContainer: {
+  addMilestoneButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
+    gap: 6,
+    backgroundColor: COLORS.card,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
-  milestoneInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: COLORS.background,
-  },
-  milestoneDateButton: {
-    padding: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    backgroundColor: COLORS.background,
-  },
-  milestoneAddButton: {
-    backgroundColor: COLORS.warm,
-    padding: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  milestoneAddButtonDisabled: {
-    backgroundColor: COLORS.softText,
-    opacity: 0.5,
-  },
-  milestoneDueDateText: {
+  addMilestoneText: {
     fontSize: 13,
-    color: COLORS.warm,
+    color: COLORS.shared,
     fontWeight: '600',
-    marginBottom: 12,
-    textAlign: 'center',
   },
   milestonesList: {
     gap: 8,
@@ -2851,182 +3695,168 @@ const styles = StyleSheet.create({
   milestoneItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: COLORS.background,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  milestoneItemCompleted: {
-    backgroundColor: COLORS.success + '10',
-    borderColor: COLORS.success + '30',
-  },
-  milestoneItemPending: {
-    opacity: 0.7,
-    backgroundColor: COLORS.background + '80',
-  },
-  milestoneCheckbox: {
-    marginRight: 12,
-  },
-  milestoneContent: {
-    flex: 1,
+    gap: 12,
+    paddingVertical: 4,
   },
   milestoneText: {
-    fontSize: 15,
-    color: COLORS.text,
-    fontWeight: '500',
+    fontSize: 14,
+    color: COLORS.textPrimary,
+    flex: 1,
   },
   milestoneTextCompleted: {
     textDecorationLine: 'line-through',
-    color: COLORS.softText,
+    color: COLORS.textTertiary,
   },
-  milestoneMeta: {
-    marginTop: 4,
+  viewAllButton: {
+    paddingVertical: 8,
+    alignItems: 'center',
   },
-  milestoneDate: {
+  viewAllText: {
     fontSize: 12,
-    color: COLORS.softText,
+    color: COLORS.shared,
+    fontWeight: '600',
   },
-  pendingText: {
-    fontSize: 11,
-    color: COLORS.softText,
-    fontStyle: 'italic',
-    marginTop: 2,
-  },
-
-  // Discussion Section
-  commentInputCard: {
-    backgroundColor: COLORS.card,
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 16,
-  },
-  commentInputContainer: {
+  addMilestoneRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
+    alignItems: 'center',
+    gap: 8,
   },
-  commentInputWrapper: {
+  addMilestoneInput: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: COLORS.textPrimary,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 20,
-    backgroundColor: COLORS.background,
+    borderColor: COLORS.cardBorder,
+  },
+  
+  goalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.cardBorder,
+  },
+  actionButton: {
+    padding: 6,
+  },
+  deleteButton: {
+    marginLeft: 'auto',
+  },
+  
+  quickAddContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    zIndex: 100,
+  },
+  quickAddBlur: {
+    borderRadius: 30,
     overflow: 'hidden',
   },
-  commentInput: {
-    flex: 1,
-    padding: 12,
-    fontSize: 15,
-    color: COLORS.text,
-    maxHeight: 100,
+  quickAddInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: Platform.OS === 'ios' ? 16 : 12,
+    backgroundColor: COLORS.card,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
   },
-  commentSendButton: {
-    backgroundColor: COLORS.warm,
-    padding: 10,
-    margin: 6,
-    borderRadius: 14,
+  quickAddInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  quickAddSubmit: {
+    marginLeft: 8,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  quickAddSubmitGradient: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  goalsListContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  
+  loadingContainer: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  commentSendButtonDisabled: {
-    backgroundColor: COLORS.softText,
-    opacity: 0.5,
-  },
-  commentsList: {
-    gap: 12,
-  },
-  commentItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  commentItemPending: {
-    opacity: 0.7,
-  },
-  commentContent: {
-    flex: 1,
-    backgroundColor: COLORS.card,
-    padding: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  commentHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  commentAuthor: {
-    fontWeight: '700',
-    color: COLORS.text,
-    fontSize: 14,
-  },
-  commentTime: {
-    fontSize: 11,
-    color: COLORS.softText,
-  },
-  commentText: {
-    color: COLORS.text,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  pendingIndicator: {
-    marginTop: 4,
-  },
-
-  // Participants
-  participantsList: {
-    marginBottom: 20,
-  },
-  participantItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.card,
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 8,
-  },
-  participantInfo: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  participantName: {
-    fontWeight: '600',
-    color: COLORS.text,
-    fontSize: 15,
-  },
-  participantEmail: {
-    fontSize: 13,
-    color: COLORS.softText,
-    marginTop: 2,
-  },
-  participantRole: {
-    marginRight: 12,
-  },
-  roleText: {
-    fontSize: 12,
-    color: COLORS.warm,
-    fontWeight: '600',
-  },
-  removeParticipantBtn: {
-    padding: 4,
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
   },
   
-  // Notification Styles
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 15,
+    color: COLORS.textTertiary,
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 40,
+  },
+  emptyButton: {
+    borderRadius: 30,
+    overflow: 'hidden',
+    shadowColor: COLORS.shared,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  emptyButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    gap: 8,
+  },
+  emptyButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  
   notificationButton: {
     position: 'relative',
     padding: 8,
-    marginRight: 12,
   },
   notificationBadge: {
     position: 'absolute',
     top: 2,
     right: 2,
-    backgroundColor: COLORS.error,
+    backgroundColor: COLORS.danger,
     borderRadius: 10,
     minWidth: 18,
     height: 18,
@@ -3040,28 +3870,29 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
   },
+  notificationHeaderGradient: {
+    paddingTop: Platform.OS === 'ios' ? 50 : 18,
+    paddingBottom: 16,
+  },
   notificationHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    backgroundColor: COLORS.card,
+    paddingHorizontal: 20,
   },
   notificationTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.text,
+    fontSize: 24,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
   },
   notificationSubtitle: {
     fontSize: 14,
-    color: COLORS.softText,
-    marginTop: 2,
+    color: COLORS.textSecondary,
+    marginTop: 4,
   },
   markAllReadText: {
-    color: COLORS.warm,
-    fontSize: 14,
+    color: COLORS.shared,
+    fontSize: 15,
     fontWeight: '600',
   },
   notificationItem: {
@@ -3069,92 +3900,977 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.cardBorder,
     backgroundColor: COLORS.card,
   },
   notificationItemUnread: {
-    backgroundColor: COLORS.accent,
-  },
-  notificationIcon: {
-    marginRight: 12,
+    backgroundColor: COLORS.shared + '10',
   },
   notificationIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 12,
   },
   notificationContent: {
     flex: 1,
   },
   notificationMessage: {
     fontSize: 14,
-    color: COLORS.text,
+    color: COLORS.textPrimary,
     marginBottom: 4,
+    lineHeight: 20,
   },
   notificationTime: {
     fontSize: 12,
-    color: COLORS.softText,
+    color: COLORS.textTertiary,
   },
   notificationDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: COLORS.warm,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.shared,
   },
   emptyNotifications: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
     padding: 40,
   },
   emptyNotificationText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
     marginTop: 16,
   },
   emptyNotificationSubtext: {
     fontSize: 14,
-    color: COLORS.softText,
+    color: COLORS.textTertiary,
     marginTop: 8,
     textAlign: 'center',
     lineHeight: 20,
   },
   
-  // Common Elements
-  label: { fontWeight: "700", color: COLORS.text, marginTop: 16, marginBottom: 6 },
-  input: { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 12, fontSize: 16 },
-  dateButton: { 
-    flexDirection: "row", 
-    alignItems: "center", 
-    padding: 12, 
-    borderRadius: 10, 
-    borderWidth: 1, 
-    borderColor: COLORS.border, 
-    backgroundColor: COLORS.card 
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
   },
-  addBtn: { backgroundColor: COLORS.warm, padding: 12, borderRadius: 10 },
-  btn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
-  cancelBtn: { backgroundColor: COLORS.border },
-  cancelBtnText: { color: COLORS.text, fontWeight: '600' },
-  saveBtn: { backgroundColor: COLORS.warm },
-  saveBtnText: { color: COLORS.card, fontWeight: '600' },
-  sectionTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 12 },
+  modalKeyboard: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 20,
+    paddingHorizontal: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+    maxHeight: height * 0.9,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalCancelButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  modalCancelText: {
+    fontSize: 17,
+    color: COLORS.shared,
+    fontWeight: '400',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  modalDoneButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  modalDoneText: {
+    fontSize: 17,
+    color: COLORS.shared,
+    fontWeight: '600',
+  },
+  modalScrollContent: {
+    paddingBottom: 20,
+  },
   
-  // Empty State
-  emptyState: { alignItems: 'center', padding: 40 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginTop: 16 },
-  emptyText: { fontSize: 14, color: COLORS.softText, marginTop: 8, textAlign: 'center' },
-  createFirstButton: {
-    backgroundColor: COLORS.warm,
-    paddingHorizontal: 24,
+  // Form Elements
+  formSection: {
+    marginBottom: 20,
+  },
+  formLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  requiredStar: {
+    color: COLORS.danger,
+  },
+  formCounter: {
+    fontSize: 11,
+    color: COLORS.textTertiary,
+    fontWeight: '500',
+  },
+  formInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formTextArea: {
+    alignItems: 'flex-start',
+  },
+  formInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  formRow: {
+    flexDirection: 'row',
+    marginBottom: 20,
+  },
+  formDateTimeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  formDateTimeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formDateTimeText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  
+  // Priority Grid
+  priorityGrid: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  priorityCard: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     paddingVertical: 12,
+    paddingHorizontal: 8,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    backgroundColor: COLORS.surfaceVariant,
+    gap: 6,
+  },
+  priorityCardActive: {
+    backgroundColor: COLORS.card,
+    borderWidth: 2,
+  },
+  priorityCardText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  
+  // Category
+  categoryGrid: {
+    flexDirection: 'row',
+    paddingVertical: 4,
+  },
+  categoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 6,
+    marginRight: 8,
+  },
+  categoryText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  
+  // Collaborator Invites
+  collaboratorList: {
+    marginBottom: 12,
+  },
+  collaboratorChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 8,
+  },
+  collaboratorChipAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.shared,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  collaboratorChipText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  collaboratorChipInfo: {
+    flex: 1,
+  },
+  collaboratorChipName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+    marginBottom: 2,
+  },
+  collaboratorChipEmail: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  inviteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  inviteInputContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  inviteInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 15,
+    color: COLORS.textPrimary,
+  },
+  inviteButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: COLORS.shared,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  helperText: {
+    fontSize: 11,
+    color: COLORS.textTertiary,
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  
+  // Detail Modal Styles
+  detailModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  detailModalSafeArea: {
+    flex: 1,
+  },
+  detailModalContainer: {
+    flex: 1,
+    backgroundColor: COLORS.backgroundBase,
+  },
+  detailModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 60 : 20,
+    paddingBottom: 16,
+    backgroundColor: COLORS.card,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.cardBorder,
+  },
+  detailModalBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.surfaceVariant,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  detailModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    flex: 1,
+    textAlign: 'center',
+  },
+  detailModalContent: {
+    padding: 20,
+    paddingBottom: 40,
+  },
+  
+  detailTabContainer: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 4,
+    marginBottom: 20,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  detailTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    gap: 6,
+  },
+  detailTabActive: {
+    backgroundColor: COLORS.shared + '15',
+  },
+  detailTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  detailTabTextActive: {
+    color: COLORS.shared,
+  },
+  
+  detailTabContent: {
+    gap: 20,
+  },
+  
+  detailOverviewCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  detailOverviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  detailOverviewStats: {
+    flex: 1,
+  },
+  detailOverviewTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 4,
+  },
+  detailOverviewValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.shared,
+    marginBottom: 4,
+  },
+  detailDescription: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.cardBorder,
+  },
+  detailDescriptionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  detailDescriptionText: {
+    fontSize: 14,
+    color: COLORS.textPrimary,
+    lineHeight: 20,
+  },
+  
+  detailMilestonesSummary: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.cardBorder,
+  },
+  detailMilestonesSummaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  detailMilestonesSummaryTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  detailMilestonesSummaryCount: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.shared,
+  },
+  detailMilestoneBar: {
+    height: 6,
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  detailMilestoneBarFill: {
+    height: '100%',
+    backgroundColor: COLORS.shared,
+    borderRadius: 3,
+  },
+  
+  detailQuickActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  detailQuickAction: {
+    flex: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  detailQuickActionGradient: {
+    padding: 16,
+    alignItems: 'center',
+    gap: 8,
+  },
+  detailQuickActionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  
+  detailParticipantsCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  detailParticipantsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  detailParticipantsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  detailParticipantsCount: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
+  detailParticipantItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.cardBorder,
+  },
+  detailParticipantInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  detailParticipantName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+    marginBottom: 2,
+  },
+  detailParticipantEmail: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  detailParticipantRole: {
+    marginRight: 8,
+  },
+  detailRoleText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+    textTransform: 'capitalize',
+  },
+  detailRemoveParticipantBtn: {
+    padding: 4,
+  },
+  
+  detailProgressCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  detailProgressHelpText: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    marginBottom: 16,
+  },
+  detailProgressInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  detailProgressInputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    borderRadius: 12,
+    backgroundColor: COLORS.surfaceVariant,
+    overflow: 'hidden',
+  },
+  detailProgressInput: {
+    flex: 1,
+    padding: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  detailUnitText: {
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: COLORS.shared,
+    fontWeight: '600',
+  },
+  detailProgressAddButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  detailProgressAddButtonDisabled: {
+    opacity: 0.5,
+  },
+  detailProgressAddButtonGradient: {
+    width: 48,
+    height: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  detailMilestonesCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  detailMilestonesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  detailMilestonesCount: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.shared,
+  },
+  detailMilestoneItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.cardBorder,
+  },
+  detailMilestoneItemCompleted: {
+    backgroundColor: COLORS.success + '08',
+  },
+  detailMilestoneItemPending: {
+    opacity: 0.7,
+  },
+  detailMilestoneCheckbox: {
+    marginRight: 12,
+  },
+  detailMilestoneContent: {
+    flex: 1,
+  },
+  detailMilestoneText: {
+    fontSize: 14,
+    color: COLORS.textPrimary,
+    fontWeight: '500',
+  },
+  detailMilestoneTextCompleted: {
+    textDecorationLine: 'line-through',
+    color: COLORS.textTertiary,
+  },
+  detailMilestoneDate: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  detailPendingText: {
+    fontSize: 11,
+    color: COLORS.shared,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+  detailAddMilestoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
     marginTop: 16,
   },
-  createFirstButtonText: {
-    color: COLORS.card,
-    fontWeight: '600',
+  detailAddMilestoneInputContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  detailAddMilestoneInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 14,
+    color: COLORS.textPrimary,
+  },
+  detailAddMilestoneButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: COLORS.shared,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  detailAddMilestoneButtonDisabled: {
+    backgroundColor: COLORS.textTertiary,
+    opacity: 0.5,
+  },
+  
+  detailCommentCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  detailCommentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginTop: 8,
+  },
+  detailCommentInputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    borderRadius: 20,
+    backgroundColor: COLORS.surfaceVariant,
+    overflow: 'hidden',
+  },
+  detailCommentInput: {
+    flex: 1,
+    padding: 12,
+    fontSize: 14,
+    color: COLORS.textPrimary,
+    maxHeight: 100,
+  },
+  detailCommentSendButton: {
+    backgroundColor: COLORS.shared,
+    padding: 10,
+    margin: 6,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detailCommentSendButtonDisabled: {
+    backgroundColor: COLORS.textTertiary,
+    opacity: 0.5,
+  },
+  detailCommentsList: {
+    gap: 12,
+  },
+  detailCommentItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  detailCommentItemPending: {
+    opacity: 0.7,
+  },
+  detailCommentContent: {
+    flex: 1,
+    backgroundColor: COLORS.card,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  detailCommentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  detailCommentAuthor: {
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    fontSize: 13,
+  },
+  detailCommentTime: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+  },
+  detailCommentText: {
+    color: COLORS.textPrimary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  detailPendingIndicator: {
+    marginTop: 4,
+  },
+  detailEmptyComments: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+  },
+  detailEmptyCommentsText: {
     fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+    marginTop: 12,
+  },
+  detailEmptyCommentsSubtext: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+  },
+  
+  detailEditForm: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 20,
+  },
+  detailSectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 16,
+  },
+  detailFormGroup: {
+    marginBottom: 16,
+  },
+  detailFormLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginBottom: 8,
+  },
+  detailFormInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  detailFormTextArea: {
+    alignItems: 'flex-start',
+  },
+  detailFormInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 15,
+    color: COLORS.textPrimary,
+  },
+  detailFormRow: {
+    flexDirection: 'row',
+    marginBottom: 16,
+  },
+  detailFormDateRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  detailFormDateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  detailFormDateText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  detailPriorityGrid: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  detailPriorityCard: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    backgroundColor: COLORS.surfaceVariant,
+    gap: 4,
+  },
+  detailPriorityCardActive: {
+    backgroundColor: COLORS.card,
+    borderWidth: 2,
+  },
+  detailPriorityCardText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  detailCategoryGrid: {
+    flexDirection: 'row',
+    paddingVertical: 4,
+  },
+  detailCategoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 6,
+    marginRight: 8,
+  },
+  detailCategoryChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  detailInviteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  detailInviteInputContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  detailInviteInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 14,
+    color: COLORS.textPrimary,
+  },
+  detailInviteButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: COLORS.shared,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  detailEditActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 20,
+  },
+  detailButton: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  detailCancelButton: {
+    backgroundColor: COLORS.surfaceVariant,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  detailCancelButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  detailSaveButton: {
+    overflow: 'hidden',
+  },
+  detailSaveButtonGradient: {
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  detailSaveButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
   },
 });

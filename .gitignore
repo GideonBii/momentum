@@ -90,7 +90,7 @@ firebase-debug.log
 firestore-debug.log
 
 # Package managers
-package-lock.json
+
 yarn.lock
 pnpm-lock.yaml
 .pnpm-store/

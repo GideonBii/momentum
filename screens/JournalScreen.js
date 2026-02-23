@@ -1,5 +1,17 @@
+// screens/JournalScreen.js
+// 🎯 COMPLETE REDESIGN - iPhone/Samsung Notes Style
+// ✅ Matches NotesScreen aesthetic perfectly
+// ✅ Glass-morphism design with BlurView
+// ✅ Animated header with scroll effect
+// ✅ Enhanced formatting visibility
+// ✅ Clean, metadata-free cards
+// ✅ No ScrollView nesting errors (using FlatList)
+
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from '@react-native-async-storage/async-storage'; // ADDED: Offline Storage
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BlurView } from 'expo-blur';
+import * as Haptics from "expo-haptics";
+import { LinearGradient } from 'expo-linear-gradient';
 import {
     addDoc,
     collection,
@@ -11,15 +23,18 @@ import {
     updateDoc,
     where,
 } from "firebase/firestore";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
+    Alert,
     Animated,
     Dimensions,
+    FlatList,
     KeyboardAvoidingView,
     Modal,
     Platform,
     ScrollView,
+    StatusBar,
     StyleSheet,
     Text,
     TextInput,
@@ -27,579 +42,1097 @@ import {
     View,
 } from "react-native";
 import { RichEditor, RichToolbar, actions } from "react-native-pell-rich-editor";
-import RenderHTML from "react-native-render-html";
+import { HTMLElementModel } from "react-native-render-html";
 import { useApp } from "../context/AppContext";
 import { db } from "../firebaseConfig";
 
-const { width } = Dimensions.get("window");
+const { width, height } = Dimensions.get("window");
 
-// 🔹 UNIFIED COLOR PALETTE (Matching HomeScreen)
+/* ================================================================================
+   🎨 COLORS - Matching NotesScreen exactly
+   ================================================================================ */
+
 const COLORS = {
     backgroundBase: "#FAFAFA",
-    backgroundLayer: "#FAFAFA",
     card: "#FFFFFF",
     textPrimary: "#4A3228",
     textSecondary: "#A98467",
     accentBlush: "#D8A39D",
     accentWarm: "#E3B777",
+    sage: "#5D8B7E",
     nudeShadow: "rgba(216,163,157,0.12)",
     shadowDark: "rgba(0,0,0,0.06)",
-    lightBorder: "#E0E0E0",
-    completedText: "#888",
-    error: "#D64545",
+    danger: "#FF6347",
     success: "#5D8B7E",
+    info: "#2196F3",
+    warning: "#FFA726",
+    surfaceVariant: "#F8F2F0",
+    textTertiary: "#B7A29E",
+    cardBorder: "rgba(216,163,157,0.2)",
+    gradientStart: "#FFF9F8",
+    gradientEnd: "#FAF0ED",
+    overlay: "rgba(74,50,40,0.4)",
+    placeholder: "#C7B5B0",
+    
+    // 🎯 ENHANCED FORMATTING COLORS
+    formatActive: "#D64545",
+    formatInactive: "#8B6F63",
 };
 
-// 🔹 HTML Rendering Styles for Journal Preview
+/* ================================================================================
+   📝 HTML RENDERING CONFIG - Optimized for journal entries
+   ================================================================================ */
+
+const customHTMLElementModels = {
+    input: HTMLElementModel.fromCustomModel({
+        tagName: 'input',
+        contentModel: 'mixed',
+        isOpaque: false,
+    })
+};
+
+const checkboxRenderer = ({ tnode, key }) => {
+    const { type, checked } = tnode.attributes;
+    
+    if (type === 'checkbox') {
+        const isChecked = checked !== undefined;
+        
+        return (
+            <View key={key} style={styles.checkboxContainer}>
+                <View style={[
+                    styles.checkbox,
+                    isChecked && styles.checkboxChecked
+                ]}>
+                    {isChecked && (
+                        <Ionicons name="checkmark" size={12} color="#fff" />
+                    )}
+                </View>
+            </View>
+        );
+    }
+    return null;
+};
+
+const listItemRenderer = ({ tnode, key, style }) => {
+    const hasCheckbox = tnode.domNode?.children?.some(child => 
+        child.name === 'input' && child.attribs?.type === 'checkbox'
+    );
+
+    if (hasCheckbox) {
+        const extractTextFromNode = (node) => {
+            if (!node) return '';
+            if (node.name === '#text') return node.data || '';
+            if (node.name === 'span' && node.children) {
+                return node.children.map(child => extractTextFromNode(child)).join('');
+            }
+            if (node.children) {
+                return node.children.map(child => extractTextFromNode(child)).join('');
+            }
+            return '';
+        };
+
+        const textNodes = tnode.domNode.children
+            .filter(child => child.name !== 'input')
+            .map(child => extractTextFromNode(child))
+            .join(' ')
+            .trim();
+
+        return (
+            <View key={key} style={[style, styles.checklistItem]}>
+                <View style={styles.checkboxContainer}>
+                    <View style={[
+                        styles.checkbox,
+                        tnode.domNode.children.some(child => 
+                            child.name === 'input' && child.attribs?.checked !== undefined
+                        ) && styles.checkboxChecked
+                    ]}>
+                        {tnode.domNode.children.some(child => 
+                            child.name === 'input' && child.attribs?.checked !== undefined
+                        ) && (
+                            <Ionicons name="checkmark" size={12} color="#fff" />
+                        )}
+                    </View>
+                </View>
+                <Text style={styles.checklistText}>
+                    {textNodes || 'Checklist item'}
+                </Text>
+            </View>
+        );
+    }
+
+    const extractText = (node) => {
+        if (!node) return '';
+        if (node.data) return node.data;
+        if (node.children) {
+            return node.children
+                .map(child => extractText(child))
+                .join('');
+        }
+        return '';
+    };
+
+    const textContent = tnode.domNode.children
+        ? tnode.domNode.children.map(child => extractText(child)).join('').trim()
+        : '';
+
+    if (!textContent) return null;
+
+    return (
+        <View key={key} style={[style, styles.defaultListItem]}>
+            <Text style={styles.defaultListText}>
+                • {textContent}
+            </Text>
+        </View>
+    );
+};
+
 const htmlTagsStyles = {
     body: { 
-        fontSize: 14, 
+        fontSize: 16, 
         color: COLORS.textPrimary,
-        maxHeight: 80, 
-        overflow: 'hidden', 
-        lineHeight: 20
+        lineHeight: 24,
+        fontFamily: Platform.OS === 'ios' ? '-apple-system' : 'system-ui',
     },
-    p: { marginBottom: 4, marginTop: 4 }, 
-    ul: { margin: 0, paddingLeft: 10 },
-    ol: { margin: 0, paddingLeft: 10 },
-    li: { marginBottom: 4 },
+    p: { 
+        marginBottom: 8, 
+        marginTop: 0,
+        color: COLORS.textPrimary,
+    },
+    ul: { 
+        margin: 0, 
+        paddingLeft: 16,
+        listStyleType: 'disc',
+    },
+    ol: { 
+        margin: 0, 
+        paddingLeft: 16,
+    },
+    li: { 
+        marginBottom: 4,
+        color: COLORS.textPrimary,
+    },
+    strong: {
+        fontWeight: '700',
+        color: COLORS.textPrimary,
+    },
+    em: {
+        fontStyle: 'italic',
+        color: COLORS.textPrimary,
+    },
+    u: {
+        textDecorationLine: 'underline',
+        color: COLORS.textPrimary,
+    },
 };
 
-// Tags to ignore during HTML rendering
-const ignoredDomTags = ['input', 'form', 'script', 'style'];
+const customRenderers = {
+    input: checkboxRenderer,
+    li: listItemRenderer
+};
+
+/* ================================================================================
+   🎯 JOURNAL CARD - Clean, no metadata, matching NotesScreen
+   ================================================================================ */
+
+const JournalCard = ({ journal, onPress, onEdit, onDelete, viewMode }) => {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+    
+    const handlePressIn = () => {
+        Animated.spring(scaleAnim, {
+            toValue: 0.98,
+            useNativeDriver: true,
+            speed: 50,
+        }).start();
+    };
+    
+    const handlePressOut = () => {
+        Animated.spring(scaleAnim, {
+            toValue: 1,
+            useNativeDriver: true,
+            speed: 50,
+        }).start();
+    };
+    
+    // Strip HTML tags and get plain text preview
+    const getPlainText = (html) => {
+        if (!html) return "";
+        return html
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    };
+    
+    const plainText = getPlainText(journal.content);
+    const previewText = plainText || "No content";
+    
+    // Format date as relative time
+    const formatDate = (date) => {
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return "Just now";
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric' 
+        });
+    };
+
+    return (
+        <Animated.View 
+            style={[
+                styles.journalCard,
+                viewMode === 'grid' ? styles.journalCardGrid : styles.journalCardList,
+                { transform: [{ scale: scaleAnim }] }
+            ]}
+        >
+            <BlurView intensity={90} tint="light" style={styles.journalCardBlur}>
+                <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPressIn={handlePressIn}
+                    onPressOut={handlePressOut}
+                    onPress={() => onPress(journal)}
+                    onLongPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                        onEdit(journal);
+                    }}
+                    delayLongPress={500}
+                    style={styles.journalCardTouchable}
+                >
+                    <View style={styles.journalCardHeader}>
+                        {/* Accent stripe - warm color for journal entries */}
+                        <View style={[styles.journalAccent, { backgroundColor: COLORS.accentWarm }]} />
+                        
+                        <View style={styles.journalContent}>
+                            {/* Title */}
+                            <Text style={styles.journalTitle} numberOfLines={1}>
+                                {journal.title || "Untitled Entry"}
+                            </Text>
+                            
+                            {/* Preview text */}
+                            <Text style={styles.journalPreviewText} numberOfLines={viewMode === 'grid' ? 3 : 2}>
+                                {previewText}
+                            </Text>
+                            
+                            {/* Footer with date only */}
+                            <View style={styles.journalFooter}>
+                                <View style={styles.journalMetaItem}>
+                                    <Ionicons name="time-outline" size={12} color={COLORS.textTertiary} />
+                                    <Text style={styles.journalMetaText}>
+                                        {formatDate(journal.createdAt)}
+                                    </Text>
+                                </View>
+                            </View>
+                        </View>
+                    </View>
+                </TouchableOpacity>
+                
+                {/* Action buttons overlay */}
+                <View style={styles.journalActionsOverlay}>
+                    <TouchableOpacity
+                        onPress={(e) => {
+                            e.stopPropagation();
+                            onEdit(journal);
+                        }}
+                        style={styles.journalActionButton}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                        <Ionicons name="create-outline" size={16} color={COLORS.textSecondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        onPress={(e) => {
+                            e.stopPropagation();
+                            onDelete(journal);
+                        }}
+                        style={styles.journalActionButton}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                        <Ionicons name="trash-outline" size={16} color={COLORS.danger} />
+                    </TouchableOpacity>
+                </View>
+            </BlurView>
+        </Animated.View>
+    );
+};
+
+/* ================================================================================
+   🎯 QUICK ADD BAR - Matching NotesScreen
+   ================================================================================ */
+
+const QuickAddBar = ({ onAdd }) => {
+    const [text, setText] = useState("");
+    const [isFocused, setIsFocused] = useState(false);
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+
+    useEffect(() => {
+        Animated.spring(scaleAnim, {
+            toValue: isFocused ? 1.02 : 1,
+            useNativeDriver: true,
+            friction: 8,
+        }).start();
+    }, [isFocused]);
+
+    const handleSubmit = () => {
+        if (text.trim()) {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            onAdd({
+                title: text.trim(),
+                content: "<p></p>",
+            });
+            setText("");
+        }
+    };
+
+    return (
+        <Animated.View style={[styles.quickAddContainer, { transform: [{ scale: scaleAnim }] }]}>
+            <BlurView intensity={90} tint="light" style={styles.quickAddBlur}>
+                <View style={styles.quickAddInner}>
+                    <Ionicons name="book-outline" size={24} color={COLORS.accentWarm} />
+                    
+                    <TextInput
+                        style={styles.quickAddInput}
+                        placeholder="New journal entry..."
+                        placeholderTextColor={COLORS.placeholder}
+                        value={text}
+                        onChangeText={setText}
+                        onFocus={() => setIsFocused(true)}
+                        onBlur={() => setIsFocused(false)}
+                        onSubmitEditing={handleSubmit}
+                        returnKeyType="done"
+                    />
+                    
+                    {text.length > 0 && (
+                        <TouchableOpacity onPress={handleSubmit} style={styles.quickAddSubmit}>
+                            <LinearGradient
+                                colors={[COLORS.accentWarm, COLORS.accentBlush]}
+                                style={styles.quickAddSubmitGradient}
+                            >
+                                <Ionicons name="arrow-forward" size={20} color="white" />
+                            </LinearGradient>
+                        </TouchableOpacity>
+                    )}
+                </View>
+            </BlurView>
+        </Animated.View>
+    );
+};
+
+/* ================================================================================
+   🏆 MAIN JOURNAL SCREEN - Complete redesign matching NotesScreen
+   ================================================================================ */
 
 export default function JournalScreen() {
     const { user } = useApp();
-    const [journals, setJournals] = useState([]);
-    const [isFormModalVisible, setIsFormModalVisible] = useState(false);
-    const [journalTitle, setJournalTitle] = useState("");
-    const [journalContent, setJournalContent] = useState("");
-    const [currentJournal, setCurrentJournal] = useState(null);
-    const [loading, setLoading] = useState(false);
     
-    // Search and Sort states
+    // State
+    const [journals, setJournals] = useState([]);
+    const [filteredJournals, setFilteredJournals] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [isFormVisible, setIsFormVisible] = useState(false);
+    const [currentJournal, setCurrentJournal] = useState(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [sortOrder, setSortOrder] = useState("newest");
-
-    // Delete Confirmation Modal states
-    const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
+    const [viewMode, setViewMode] = useState("list");
+    
+    // Form state
+    const [journalTitle, setJournalTitle] = useState("");
+    const [journalContent, setJournalContent] = useState("");
+    
+    // Delete confirmation
+    const [isConfirmVisible, setIsConfirmVisible] = useState(false);
     const [journalToDelete, setJournalToDelete] = useState(null);
-
-    // Success feedback state
-    const [showSuccessMessage, setShowSuccessMessage] = useState(false);
-    const [successMessage, setSuccessMessage] = useState("");
-    const successOpacity = useRef(new Animated.Value(0)).current;
-
-    // Auto-save draft
+    
+    // Editor state - Track active formats
+    const [activeFormats, setActiveFormats] = useState({
+        bold: false,
+        italic: false,
+        underline: false,
+    });
+    
+    // Refs
+    const richText = useRef();
+    const scrollY = useRef(new Animated.Value(0)).current;
+    const isMounted = useRef(true);
+    const flatListRef = useRef();
+    
+    // Draft state
     const [draftTitle, setDraftTitle] = useState("");
     const [draftContent, setDraftContent] = useState("");
 
-    const richText = useRef();
+    // Memoized HTML render props
+    const htmlRenderProps = useMemo(() => ({
+        contentWidth: width - 72,
+        tagsStyles: htmlTagsStyles,
+        customHTMLElementModels,
+        renderers: customRenderers,
+        defaultTextProps: { selectable: false },
+        enableExperimentalMarginCollapsing: true,
+        systemFonts: ['-apple-system', 'system-ui'],
+    }), []);
+
+    useEffect(() => {
+        isMounted.current = true;
+        return () => { isMounted.current = false; };
+    }, []);
 
     const isSaveDisabled = useMemo(() => {
         return !journalTitle.trim() && !journalContent.trim();
     }, [journalTitle, journalContent]);
 
-    // 🔹 SUCCESS MESSAGE ANIMATION
-    const showSuccess = (message) => {
-        setSuccessMessage(message);
-        setShowSuccessMessage(true);
-        Animated.sequence([
-            Animated.timing(successOpacity, {
-                toValue: 1,
-                duration: 300,
-                useNativeDriver: true,
-            }),
-            Animated.delay(2000),
-            Animated.timing(successOpacity, {
-                toValue: 0,
-                duration: 300,
-                useNativeDriver: true,
-            }),
-        ]).start(() => setShowSuccessMessage(false));
-    };
+    /* ================================================================================
+       🔥 FIRESTORE LISTENER
+       ================================================================================ */
 
-    // 🔹 OFFLINE FIRST: Load Cache on mount
     useEffect(() => {
-        async function loadCache() {
-            if (!user) return;
-            try {
-                const cachedData = await AsyncStorage.getItem(`journal_cache_${user.uid}`);
-                if (cachedData) {
-                    const parsed = JSON.parse(cachedData).map(item => ({
-                        ...item,
-                        // Rehydrate date strings back to Date objects
-                        createdAt: item.createdAt ? new Date(item.createdAt) : new Date(),
-                    }));
-                    setJournals(parsed);
-                }
-            } catch (error) {
-                console.log("Failed to load journal cache", error);
-            }
+        if (!user) {
+            setJournals([]);
+            setLoading(false);
+            return;
         }
-        loadCache();
-    }, [user]);
 
-    // 🔹 FIREBASE LISTENER
-    useEffect(() => {
-        if (!user || !db) return;
-        
-        const journalsQuery = query(
+        const q = query(
             collection(db, "journal"),
             where("userId", "==", user.uid)
         );
 
-        const unsubscribe = onSnapshot(journalsQuery, (snapshot) => {
-            const fetchedJournals = snapshot.docs.map((doc) => {
-                const data = doc.data();
-                return {
-                    id: doc.id,
-                    ...data,
-                    createdAt: data.createdAt?.toDate ?
-                        data.createdAt.toDate() :
-                        new Date(),
-                };
-            });
-            setJournals(fetchedJournals);
-            
-            // ADDED: Update Cache
-            AsyncStorage.setItem(`journal_cache_${user.uid}`, JSON.stringify(fetchedJournals));
-        }, (error) => {
-            console.error("Firestore listener error:", error);
-        });
+        const unsubscribe = onSnapshot(
+            q,
+            (snapshot) => {
+                const journalList = snapshot.docs.map(doc => {
+                    const data = doc.data();
+                    return {
+                        id: doc.id,
+                        ...data,
+                        createdAt: data.createdAt?.toDate?.() || data.createdAt || new Date(),
+                        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+                    };
+                });
+
+                journalList.sort((a, b) => b.createdAt - a.createdAt);
+
+                if (isMounted.current) {
+                    setJournals(journalList);
+                    setLoading(false);
+                    
+                    // Cache journals
+                    AsyncStorage.setItem(`journal_cache_${user.uid}`, JSON.stringify(journalList)).catch(console.error);
+                }
+            },
+            (error) => {
+                console.error("Journal listener error:", error);
+                if (isMounted.current) {
+                    setLoading(false);
+                }
+            }
+        );
 
         return () => unsubscribe();
     }, [user]);
 
-    // 🔹 AUTO-SAVE DRAFT
-    useEffect(() => {
-        if (isFormModalVisible && (journalTitle || journalContent)) {
-            setDraftTitle(journalTitle);
-            setDraftContent(journalContent);
-        }
-    }, [journalTitle, journalContent, isFormModalVisible]);
+    /* ================================================================================
+       🔍 FILTERING & SEARCH
+       ================================================================================ */
 
-    // 🔹 MODAL HANDLERS
-    const closeJournalModal = () => {
-        if ((journalTitle.trim() || journalContent.trim()) && !currentJournal) {
-            setDraftTitle(journalTitle);
-            setDraftContent(journalContent);
+    useEffect(() => {
+        let filtered = [...journals];
+        
+        if (searchQuery) {
+            const query = searchQuery.toLowerCase();
+            filtered = filtered.filter(j => {
+                const title = j.title?.toLowerCase() || "";
+                const content = j.content?.toLowerCase() || "";
+                return title.includes(query) || content.includes(query);
+            });
         }
         
-        setIsFormModalVisible(false);
-        setCurrentJournal(null);
-        setJournalTitle("");
-        setJournalContent("");
-    };
-
-    const openJournalModal = (journal = null) => {
-        if (journal) {
-            setCurrentJournal(journal);
-            setJournalTitle(journal.title);
-            setJournalContent(journal.content);
-        } else {
-            setCurrentJournal(null);
-            setJournalTitle(draftTitle);
-            setJournalContent(draftContent);
-        }
-        setIsFormModalVisible(true);
-    };
-
-    // 🔹 CRUD OPERATIONS
-    const handleSaveJournal = async () => {
-        if (isSaveDisabled) return;
-
-        setLoading(true);
-        try {
-            const journalData = {
-                title: journalTitle,
-                content: journalContent,
-                userId: user.uid,
-                createdAt: currentJournal?.createdAt || serverTimestamp(), 
-            };
-
-            if (currentJournal) {
-                const updatedData = { ...journalData };
-                delete updatedData.createdAt;
-                await updateDoc(doc(db, "journal", currentJournal.id), updatedData);
-                showSuccess("Journal updated successfully!");
+        filtered.sort((a, b) => {
+            if (sortOrder === "newest") {
+                return b.createdAt - a.createdAt;
             } else {
-                await addDoc(collection(db, "journal"), journalData);
-                showSuccess("Journal created successfully!");
+                return a.createdAt - b.createdAt;
+            }
+        });
+        
+        setFilteredJournals(filtered);
+    }, [journals, searchQuery, sortOrder]);
+
+    /* ================================================================================
+       🎯 JOURNAL OPERATIONS
+       ================================================================================ */
+
+    const showMessage = useCallback((message) => {
+        Alert.alert(message);
+    }, []);
+
+    const handleQuickAdd = async ({ title, content }) => {
+        if (!user) return;
+        
+        try {
+            await addDoc(collection(db, "journal"), {
+                title: title.trim(),
+                content: content || "<p></p>",
+                userId: user.uid,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            });
+            
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showMessage("✨ Journal entry created!");
+        } catch (error) {
+            console.error("Quick add error:", error);
+            Alert.alert("Error", "Failed to create journal entry");
+        }
+    };
+
+    const handleSaveJournal = async () => {
+        if (isSaveDisabled) {
+            Alert.alert("Error", "Please enter a title or content");
+            return;
+        }
+        
+        if (!user) return;
+        
+        setLoading(true);
+        
+        try {
+            if (currentJournal) {
+                await updateDoc(doc(db, "journal", currentJournal.id), {
+                    title: journalTitle.trim() || "Untitled Entry",
+                    content: journalContent || "<p></p>",
+                    updatedAt: serverTimestamp(),
+                });
+                
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showMessage("✅ Journal entry updated");
+            } else {
+                await addDoc(collection(db, "journal"), {
+                    title: journalTitle.trim() || "Untitled Entry",
+                    content: journalContent || "<p></p>",
+                    userId: user.uid,
+                    createdAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                });
+                
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showMessage("📝 Journal entry created");
+                
+                // Clear draft
                 setDraftTitle("");
                 setDraftContent("");
             }
-            closeJournalModal();
+            
+            setIsFormVisible(false);
+            resetForm();
         } catch (error) {
-            console.error("Error saving journal:", error);
-            showSuccess("Error saving journal. Please try again.");
+            console.error("Save journal error:", error);
+            Alert.alert("Error", "Failed to save journal entry");
         } finally {
             setLoading(false);
         }
     };
 
-    const confirmDelete = (journal) => {
-        setJournalToDelete(journal);
-        setIsConfirmModalVisible(true);
+    const resetForm = () => {
+        setCurrentJournal(null);
+        setJournalTitle("");
+        setJournalContent("");
+        setActiveFormats({ bold: false, italic: false, underline: false });
+    };
+
+    const handleEditJournal = (journal) => {
+        setCurrentJournal(journal);
+        setJournalTitle(journal.title || "");
+        setJournalContent(journal.content || "");
+        setIsFormVisible(true);
     };
 
     const handleDeleteJournal = async () => {
         if (!journalToDelete) return;
+        
         try {
             await deleteDoc(doc(db, "journal", journalToDelete.id));
-            setIsConfirmModalVisible(false);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showMessage("🗑️ Journal entry deleted");
+            setIsConfirmVisible(false);
             setJournalToDelete(null);
-            showSuccess("Journal deleted successfully!");
         } catch (error) {
-            console.error("Error deleting journal:", error);
-            showSuccess("Error deleting journal. Please try again.");
+            console.error("Delete journal error:", error);
+            Alert.alert("Error", "Failed to delete journal entry");
         }
     };
 
-    // 🔹 SEARCH & SORT LOGIC
-    const filteredAndSortedJournals = useMemo(() => {
-        let filtered = journals.filter(journal =>
-            journal.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            journal.content.toLowerCase().includes(searchQuery.toLowerCase())
-        );
-
-        if (sortOrder === "newest") {
-            filtered.sort((a, b) => b.createdAt - a.createdAt);
-        } else {
-            filtered.sort((a, b) => a.createdAt - b.createdAt);
-        }
-
-        return filtered;
-    }, [journals, searchQuery, sortOrder]);
+    const confirmDelete = (journal) => {
+        setJournalToDelete(journal);
+        setIsConfirmVisible(true);
+    };
 
     const toggleSortOrder = () => {
         setSortOrder(sortOrder === "newest" ? "oldest" : "newest");
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     };
 
     const clearSearch = () => {
         setSearchQuery("");
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     };
 
-    // 🔹 RENDER FUNCTIONS
-    const renderJournalCard = (journal) => (
-        <TouchableOpacity 
-            key={journal.id} 
-            style={styles.journalCard}
-            onPress={() => openJournalModal(journal)}
-            activeOpacity={0.7}
-        >
-            <View style={styles.journalHeader}>
-                <Text style={styles.journalTitle} numberOfLines={1}>
-                    {journal.title || "Untitled Entry"}
-                </Text>
-                <View style={styles.journalActions}>
-                    <TouchableOpacity
-                        onPress={(e) => {
-                            e.stopPropagation();
-                            openJournalModal(journal);
-                        }}
-                        style={styles.actionButton}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                        <Ionicons name="create-outline" size={20} color={COLORS.textSecondary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        onPress={(e) => {
-                            e.stopPropagation();
-                            confirmDelete(journal);
-                        }}
-                        style={styles.actionButton}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                        <Ionicons name="trash-outline" size={20} color={COLORS.error} />
-                    </TouchableOpacity>
-                </View>
-            </View>
-            <Text style={styles.journalDate}>
-                {`${journal.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${journal.createdAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`}
-            </Text>
-            <RenderHTML
-                contentWidth={width - 60}
-                source={{ html: journal.content || "<p>No content</p>" }}
-                tagsStyles={htmlTagsStyles} 
-                defaultTextProps={{ selectable: false }}
-                enableExperimentalMarginCollapsing={true}
-                ignoredDomTags={ignoredDomTags}
-            />
-        </TouchableOpacity>
+    // 🎯 Handle editor initialization
+    const handleEditorInitialized = () => {
+        // Format tracking would go here
+    };
+
+    // 🎯 FlatList render item
+    const renderJournalItem = ({ item }) => (
+        <JournalCard
+            journal={item}
+            onPress={handleEditJournal}
+            onEdit={handleEditJournal}
+            onDelete={confirmDelete}
+            viewMode={viewMode}
+        />
     );
 
-    return (
-        <View style={styles.container}>
-            {/* Header */}
-            <View style={styles.header}>
-                <View>
-                    <Text style={styles.headerTitle}>My Journal</Text>
-                    <Text style={styles.headerSubtitle}>{journals.length} {journals.length === 1 ? 'entry' : 'entries'}</Text>
-                </View>
-                <TouchableOpacity
-                    style={styles.addButton}
-                    onPress={() => openJournalModal()}
-                    activeOpacity={0.8}
-                >
-                    <Ionicons name="add" size={24} color="#fff" />
-                </TouchableOpacity>
-            </View>
+    /* ================================================================================
+       🎨 RENDER
+       ================================================================================ */
 
-            {/* Search and Sort bar */}
-            <View style={styles.searchSortContainer}>
-                <View style={styles.searchInputContainer}>
-                    <Ionicons name="search" size={20} color={COLORS.completedText} style={styles.searchIcon} />
-                    <TextInput
-                        style={styles.searchInput}
-                        placeholder="Search journal entries..."
-                        placeholderTextColor={COLORS.completedText}
-                        value={searchQuery}
-                        onChangeText={setSearchQuery}
-                    />
-                    {searchQuery.length > 0 && (
-                        <TouchableOpacity onPress={clearSearch} style={styles.clearButton}>
-                            <Ionicons name="close-circle" size={20} color={COLORS.completedText} />
-                        </TouchableOpacity>
-                    )}
+    const headerHeight = scrollY.interpolate({
+        inputRange: [0, 100],
+        outputRange: [Platform.OS === 'ios' ? 140 : 120, 100],
+        extrapolate: 'clamp',
+    });
+
+    const headerTitleSize = scrollY.interpolate({
+        inputRange: [0, 100],
+        outputRange: [32, 24],
+        extrapolate: 'clamp',
+    });
+
+    return (
+        <View style={styles.screen}>
+            <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundBase} />
+            
+            {/* Animated Header */}
+            <Animated.View style={[styles.header, { height: headerHeight }]}>
+                <LinearGradient
+                    colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+                    style={StyleSheet.absoluteFill}
+                />
+                
+                <View style={styles.headerContent}>
+                    <View style={styles.headerTop}>
+                        <View>
+                            <Animated.Text style={[styles.headerTitle, { fontSize: headerTitleSize }]}>
+                                Journal
+                            </Animated.Text>
+                            <Text style={styles.headerSubtitle}>
+                                {journals.length} {journals.length === 1 ? 'entry' : 'entries'}
+                            </Text>
+                        </View>
+                        
+                        <View style={styles.headerRight}>
+                            <View style={styles.viewModeToggle}>
+                                <TouchableOpacity
+                                    style={[styles.viewModeButton, viewMode === 'list' && styles.viewModeButtonActive]}
+                                    onPress={() => setViewMode('list')}
+                                >
+                                    <Ionicons 
+                                        name="list" 
+                                        size={20} 
+                                        color={viewMode === 'list' ? COLORS.accentBlush : COLORS.textTertiary} 
+                                    />
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[styles.viewModeButton, viewMode === 'grid' && styles.viewModeButtonActive]}
+                                    onPress={() => setViewMode('grid')}
+                                >
+                                    <Ionicons 
+                                        name="grid" 
+                                        size={20} 
+                                        color={viewMode === 'grid' ? COLORS.accentBlush : COLORS.textTertiary} 
+                                    />
+                                </TouchableOpacity>
+                            </View>
+                            
+                            <TouchableOpacity 
+                                style={styles.addButton}
+                                onPress={() => {
+                                    resetForm();
+                                    setIsFormVisible(true);
+                                }}
+                            >
+                                <LinearGradient
+                                    colors={[COLORS.accentWarm, COLORS.accentBlush]}
+                                    style={styles.addButtonGradient}
+                                >
+                                    <Ionicons name="add" size={24} color="white" />
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                    
+                    {/* Search Bar */}
+                    <View style={styles.searchContainer}>
+                        <Ionicons name="search" size={18} color={COLORS.textTertiary} />
+                        <TextInput
+                            style={styles.searchInput}
+                            placeholder="Search journal entries..."
+                            placeholderTextColor={COLORS.placeholder}
+                            value={searchQuery}
+                            onChangeText={setSearchQuery}
+                        />
+                        {searchQuery ? (
+                            <TouchableOpacity onPress={clearSearch}>
+                                <Ionicons name="close-circle" size={18} color={COLORS.textTertiary} />
+                            </TouchableOpacity>
+                        ) : null}
+                    </View>
                 </View>
+            </Animated.View>
+            
+            {/* Sort Bar */}
+            <View style={styles.sortBar}>
+                <Text style={styles.sortLabel}>Sort by:</Text>
                 <TouchableOpacity 
                     style={styles.sortButton} 
                     onPress={toggleSortOrder}
-                    activeOpacity={0.7}
                 >
+                    <Text style={styles.sortButtonText}>
+                        {sortOrder === "newest" ? "Newest first" : "Oldest first"}
+                    </Text>
                     <Ionicons
                         name={sortOrder === 'newest' ? "arrow-down" : "arrow-up"}
-                        size={20}
-                        color={COLORS.textSecondary}
+                        size={16}
+                        color={COLORS.sage}
                     />
                 </TouchableOpacity>
             </View>
-
-            {/* Journals List */}
-            <ScrollView 
-                contentContainerStyle={styles.scrollContent}
-                showsVerticalScrollIndicator={false}
-            >
-                {filteredAndSortedJournals.length === 0 && !searchQuery ? (
-                    <View style={styles.emptyContainer}>
-                        <Ionicons name="book-outline" size={80} color={COLORS.lightBorder} />
-                        <Text style={styles.emptyText}>No journal entries yet</Text>
-                        <Text style={styles.emptySubtext}>Tap the + button to create your first entry</Text>
+            
+            {/* Journal List - Using FlatList */}
+            {loading ? (
+                <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color={COLORS.accentBlush} />
+                    <Text style={styles.loadingText}>Loading your journal...</Text>
+                </View>
+            ) : filteredJournals.length === 0 ? (
+                <View style={styles.emptyState}>
+                    <View style={styles.emptyStateIcon}>
+                        <Ionicons name="book-outline" size={64} color={COLORS.textTertiary} />
                     </View>
-                ) : filteredAndSortedJournals.length === 0 && searchQuery ? (
-                    <View style={styles.emptyContainer}>
-                        <Ionicons name="search-outline" size={80} color={COLORS.lightBorder} />
-                        <Text style={styles.emptyText}>No results found</Text>
-                        <Text style={styles.emptySubtext}>Try a different search term</Text>
-                    </View>
-                ) : (
-                    filteredAndSortedJournals.map(renderJournalCard)
-                )}
-            </ScrollView>
-
-            {/* Success Message */}
-            {showSuccessMessage && (
-                <Animated.View style={[styles.successMessage, { opacity: successOpacity }]}>
-                    <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                    <Text style={styles.successText}>{successMessage}</Text>
-                </Animated.View>
+                    <Text style={styles.emptyTitle}>
+                        {searchQuery ? "No entries found" : "No journal entries yet"}
+                    </Text>
+                    <Text style={styles.emptyText}>
+                        {searchQuery 
+                            ? "Try a different search term" 
+                            : "Create your first journal entry to get started"}
+                    </Text>
+                    <TouchableOpacity
+                        style={styles.emptyButton}
+                        onPress={() => {
+                            resetForm();
+                            setIsFormVisible(true);
+                        }}
+                    >
+                        <LinearGradient
+                            colors={[COLORS.accentWarm, COLORS.accentBlush]}
+                            style={styles.emptyButtonGradient}
+                        >
+                            <Ionicons name="add" size={20} color="white" />
+                            <Text style={styles.emptyButtonText}>Create Entry</Text>
+                        </LinearGradient>
+                    </TouchableOpacity>
+                </View>
+            ) : (
+                <FlatList
+                    ref={flatListRef}
+                    data={filteredJournals}
+                    renderItem={renderJournalItem}
+                    keyExtractor={(item) => item.id}
+                    numColumns={viewMode === 'grid' ? 2 : 1}
+                    key={viewMode}
+                    contentContainerStyle={styles.journalListContent}
+                    showsVerticalScrollIndicator={false}
+                    onScroll={Animated.event(
+                        [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+                        { useNativeDriver: false }
+                    )}
+                    scrollEventThrottle={16}
+                    ListFooterComponent={<View style={{ height: 100 }} />}
+                />
             )}
-
-            {/* Editor Modal */}
-            <Modal visible={isFormModalVisible} transparent={true} animationType="slide">
-                <KeyboardAvoidingView
-                    style={styles.modalOverlay}
-                    behavior={Platform.OS === "ios" ? "padding" : undefined}
-                    keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
-                >
-                    <View style={styles.modalContainer}>
-                        {/* Header */}
-                        <View style={styles.modalHeader}>
-                            <View>
+            
+            {/* Quick Add Bar */}
+            {viewMode === 'list' && !loading && filteredJournals.length > 0 && (
+                <QuickAddBar onAdd={handleQuickAdd} />
+            )}
+            
+            {/* ================================================================================
+               📝 JOURNAL EDITOR MODAL - Enhanced formatting visibility
+               ================================================================================ */}
+            
+            <Modal
+                visible={isFormVisible}
+                animationType="slide"
+                transparent
+                onRequestClose={() => setIsFormVisible(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+                    
+                    <KeyboardAvoidingView
+                        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                        style={styles.modalKeyboard}
+                        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+                    >
+                        <View style={styles.modalContainer}>
+                            {/* Modal Header */}
+                            <View style={styles.modalHeader}>
+                                <TouchableOpacity
+                                    onPress={() => {
+                                        setIsFormVisible(false);
+                                        resetForm();
+                                    }}
+                                    style={styles.modalCancelButton}
+                                >
+                                    <Text style={styles.modalCancelText}>Cancel</Text>
+                                </TouchableOpacity>
+                                
                                 <Text style={styles.modalTitle}>
                                     {currentJournal ? "Edit Entry" : "New Entry"}
                                 </Text>
-                                {currentJournal && (
-                                    <Text style={styles.modalSubtitle}>
-                                        Last edited {currentJournal.createdAt.toLocaleDateString()}
+                                
+                                <TouchableOpacity
+                                    onPress={handleSaveJournal}
+                                    disabled={isSaveDisabled || loading}
+                                    style={[
+                                        styles.modalDoneButton,
+                                        (isSaveDisabled || loading) && styles.modalDoneButtonDisabled
+                                    ]}
+                                >
+                                    {loading ? (
+                                        <ActivityIndicator size="small" color={COLORS.sage} />
+                                    ) : (
+                                        <Text style={[
+                                            styles.modalDoneText,
+                                            isSaveDisabled && styles.modalDoneTextDisabled
+                                        ]}>
+                                            Save
+                                        </Text>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
+                            
+                            {/* Title Input */}
+                            <View style={styles.titleSection}>
+                                <TextInput
+                                    style={styles.titleInput}
+                                    placeholder="Title"
+                                    placeholderTextColor={COLORS.placeholder}
+                                    value={journalTitle}
+                                    onChangeText={setJournalTitle}
+                                    maxLength={200}
+                                    autoFocus={!currentJournal}
+                                />
+                                {journalTitle.length > 0 && (
+                                    <Text style={styles.characterCount}>
+                                        {journalTitle.length}/200
                                     </Text>
                                 )}
                             </View>
-                            <TouchableOpacity onPress={closeJournalModal} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                                <Ionicons name="close" size={28} color={COLORS.textPrimary} />
-                            </TouchableOpacity>
-                        </View>
-
-                        {/* Title Input with Character Count */}
-                        <View style={styles.titleInputContainer}>
-                            <TextInput
-                                style={styles.titleInput}
-                                placeholder="Entry title"
-                                placeholderTextColor={COLORS.completedText}
-                                value={journalTitle}
-                                onChangeText={setJournalTitle}
-                                autoFocus={!currentJournal}
-                                maxLength={100}
-                                returnKeyType="next"
-                                onSubmitEditing={() => richText.current?.focusContentEditor()}
-                            />
-                            {journalTitle.length > 0 && (
-                                <Text style={styles.characterCount}>{journalTitle.length}/100</Text>
-                            )}
-                        </View>
-
-                        {/* Enhanced Rich Toolbar with Labels */}
-                        <View style={styles.toolbarContainer}>
-                            <Text style={styles.toolbarLabel}>Format:</Text>
-                            <RichToolbar
-                                editor={richText}
-                                actions={[
-                                    actions.setBold,
-                                    actions.setItalic,
-                                    actions.setUnderline,
-                                    actions.insertBulletsList,
-                                    actions.insertOrderedList,
-                                    actions.checkboxList,
-                                    actions.undo,
-                                    actions.redo,
-                                ]}
-                                iconMap={{
-                                    [actions.setBold]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Text style={[styles.toolbarText, { color: tintColor, fontWeight: 'bold' }]}>B</Text>
-                                        </View>
-                                    ),
-                                    [actions.setItalic]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Text style={[styles.toolbarText, { color: tintColor, fontStyle: 'italic' }]}>I</Text>
-                                        </View>
-                                    ),
-                                    [actions.setUnderline]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Text style={[styles.toolbarText, { color: tintColor, textDecorationLine: 'underline' }]}>U</Text>
-                                        </View>
-                                    ),
-                                    [actions.insertBulletsList]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Ionicons name="list-outline" size={22} color={tintColor} />
-                                        </View>
-                                    ),
-                                    [actions.insertOrderedList]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Ionicons name="list" size={22} color={tintColor} />
-                                        </View>
-                                    ),
-                                    [actions.checkboxList]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Ionicons name="checkbox-outline" size={22} color={tintColor} />
-                                        </View>
-                                    ),
-                                    [actions.undo]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Ionicons name="arrow-undo" size={22} color={tintColor} />
-                                        </View>
-                                    ),
-                                    [actions.redo]: ({ tintColor }) => (
-                                        <View style={styles.toolbarIconContainer}>
-                                            <Ionicons name="arrow-redo" size={22} color={tintColor} />
-                                        </View>
-                                    ),
-                                }}
-                                style={styles.richToolbar}
-                                selectedIconTint={COLORS.accentBlush}
-                                iconTint={COLORS.textSecondary}
-                                disabled={false}
-                            />
-                        </View>
-
-                        {/* Rich Editor with Enhanced Styling */}
-                        <ScrollView 
-                            style={styles.editorScrollView} 
-                            keyboardShouldPersistTaps="handled"
-                            contentContainerStyle={styles.editorScrollContent}
-                        >
-                            <RichEditor
-                                ref={richText}
-                                style={styles.richEditor}
-                                placeholder="Write your journal entry here...&#10;&#10;• Use the toolbar above to format text&#10;• Add bullet points or numbered lists&#10;• Create checklists for tasks"
-                                initialContentHTML={journalContent}
-                                onChange={setJournalContent}
-                                androidHardwareAccelerationDisabled={true}
-                                editorStyle={{
-                                    backgroundColor: COLORS.card,
-                                    color: COLORS.textPrimary,
-                                    placeholderColor: COLORS.completedText,
-                                    contentCSSText: `
-                                        font-size: 16px; 
-                                        line-height: 1.6;
-                                        padding: 12px;
-                                        font-family: -apple-system, system-ui;
-                                    `
-                                }}
-                                useContainer={true}
-                                enterKeyHint="enter"
-                            />
-                        </ScrollView>
-
-                        {/* Helper Text */}
-                        <View style={styles.editorFooter}>
-                            <Text style={styles.editorHelper}>
-                                Tip: Press and hold to format selected text
-                            </Text>
-                        </View>
-
-                        {/* Save Button */}
-                        <TouchableOpacity
-                            style={[styles.saveButton, isSaveDisabled && styles.saveButtonDisabled]}
-                            onPress={handleSaveJournal}
-                            disabled={isSaveDisabled || loading}
-                            activeOpacity={0.8}
-                        >
-                            {loading ? (
-                                <ActivityIndicator color="#fff" />
-                            ) : (
-                                <>
-                                    <Ionicons name="checkmark" size={20} color="#fff" style={{ marginRight: 8 }} />
-                                    <Text style={styles.saveButtonText}>
-                                        {currentJournal ? "Update Entry" : "Save Entry"}
+                            
+                            {/* Enhanced Formatting Toolbar */}
+                            <View style={styles.toolbarWrapper}>
+                                <ScrollView 
+                                    horizontal 
+                                    showsHorizontalScrollIndicator={false}
+                                    contentContainerStyle={styles.toolbarScrollContent}
+                                >
+                                    <RichToolbar
+                                        editor={richText}
+                                        actions={[
+                                            actions.setBold,
+                                            actions.setItalic,
+                                            actions.setUnderline,
+                                            actions.insertBulletsList,
+                                            actions.insertOrderedList,
+                                            actions.checkboxList,
+                                            'separator',
+                                            actions.undo,
+                                            actions.redo,
+                                        ]}
+                                        iconMap={{
+                                            [actions.setBold]: ({ tintColor }) => (
+                                                <View style={[
+                                                    styles.toolbarIconContainer,
+                                                    activeFormats.bold && styles.toolbarIconContainerActive
+                                                ]}>
+                                                    <Text style={[
+                                                        styles.toolbarText,
+                                                        { color: activeFormats.bold ? '#FFFFFF' : COLORS.formatInactive },
+                                                        styles.toolbarTextBold
+                                                    ]}>B</Text>
+                                                </View>
+                                            ),
+                                            [actions.setItalic]: ({ tintColor }) => (
+                                                <View style={[
+                                                    styles.toolbarIconContainer,
+                                                    activeFormats.italic && styles.toolbarIconContainerActive
+                                                ]}>
+                                                    <Text style={[
+                                                        styles.toolbarText,
+                                                        { color: activeFormats.italic ? '#FFFFFF' : COLORS.formatInactive },
+                                                        styles.toolbarTextItalic
+                                                    ]}>I</Text>
+                                                </View>
+                                            ),
+                                            [actions.setUnderline]: ({ tintColor }) => (
+                                                <View style={[
+                                                    styles.toolbarIconContainer,
+                                                    activeFormats.underline && styles.toolbarIconContainerActive
+                                                ]}>
+                                                    <Text style={[
+                                                        styles.toolbarText,
+                                                        { color: activeFormats.underline ? '#FFFFFF' : COLORS.formatInactive },
+                                                        styles.toolbarTextUnderline
+                                                    ]}>U</Text>
+                                                </View>
+                                            ),
+                                            [actions.insertBulletsList]: ({ tintColor }) => (
+                                                <View style={[
+                                                    styles.toolbarIconContainer,
+                                                    tintColor === COLORS.formatActive && styles.toolbarIconContainerActive
+                                                ]}>
+                                                    <Ionicons 
+                                                        name="list-outline" 
+                                                        size={22} 
+                                                        color={tintColor === COLORS.formatActive ? '#FFFFFF' : COLORS.formatInactive} 
+                                                    />
+                                                </View>
+                                            ),
+                                            [actions.insertOrderedList]: ({ tintColor }) => (
+                                                <View style={[
+                                                    styles.toolbarIconContainer,
+                                                    tintColor === COLORS.formatActive && styles.toolbarIconContainerActive
+                                                ]}>
+                                                    <Ionicons 
+                                                        name="list" 
+                                                        size={22} 
+                                                        color={tintColor === COLORS.formatActive ? '#FFFFFF' : COLORS.formatInactive} 
+                                                    />
+                                                </View>
+                                            ),
+                                            [actions.checkboxList]: ({ tintColor }) => (
+                                                <View style={[
+                                                    styles.toolbarIconContainer,
+                                                    tintColor === COLORS.formatActive && styles.toolbarIconContainerActive
+                                                ]}>
+                                                    <Ionicons 
+                                                        name="checkbox-outline" 
+                                                        size={22} 
+                                                        color={tintColor === COLORS.formatActive ? '#FFFFFF' : COLORS.formatInactive} 
+                                                    />
+                                                </View>
+                                            ),
+                                            [actions.undo]: ({ tintColor }) => (
+                                                <View style={styles.toolbarIconContainer}>
+                                                    <Ionicons name="arrow-undo" size={20} color={COLORS.formatInactive} />
+                                                </View>
+                                            ),
+                                            [actions.redo]: ({ tintColor }) => (
+                                                <View style={styles.toolbarIconContainer}>
+                                                    <Ionicons name="arrow-redo" size={20} color={COLORS.formatInactive} />
+                                                </View>
+                                            ),
+                                            'separator': () => (
+                                                <View style={styles.toolbarSeparator} />
+                                            ),
+                                        }}
+                                        style={styles.richToolbar}
+                                        selectedIconTint={COLORS.formatActive}
+                                        iconTint={COLORS.formatInactive}
+                                        onPressAddImage={() => {}}
+                                    />
+                                </ScrollView>
+                            </View>
+                            
+                            {/* Rich Text Editor */}
+                            <View style={styles.editorContainer}>
+                                <RichEditor
+                                    ref={richText}
+                                    style={styles.richEditor}
+                                    placeholder="Write your journal entry here..."
+                                    placeholderTextColor={COLORS.placeholder}
+                                    initialContentHTML={journalContent}
+                                    onChange={setJournalContent}
+                                    onInitialized={handleEditorInitialized}
+                                    editorStyle={{
+                                        backgroundColor: COLORS.card,
+                                        color: COLORS.textPrimary,
+                                        placeholderColor: COLORS.placeholder,
+                                        contentCSSText: `
+                                            font-size: 17px;
+                                            line-height: 1.6;
+                                            padding: 16px;
+                                            font-family: -apple-system, system-ui;
+                                            color: ${COLORS.textPrimary};
+                                        `
+                                    }}
+                                    useContainer={false}
+                                />
+                            </View>
+                            
+                            {/* Simple Footer */}
+                            <View style={styles.editorFooter}>
+                                <Text style={styles.editorHelper}>
+                                    <Ionicons name="information-circle-outline" size={14} color={COLORS.textTertiary} /> 
+                                    {' '}Tap to format, double-tap to select
+                                </Text>
+                                {journalContent.length > 0 && (
+                                    <Text style={styles.wordCount}>
+                                        {journalContent.replace(/<[^>]*>/g, '').length} characters
                                     </Text>
-                                </>
-                            )}
-                        </TouchableOpacity>
-                    </View>
-                </KeyboardAvoidingView>
+                                )}
+                            </View>
+                        </View>
+                    </KeyboardAvoidingView>
+                </View>
             </Modal>
             
             {/* Delete Confirmation Modal */}
             <Modal
-                visible={isConfirmModalVisible}
-                transparent={true}
+                visible={isConfirmVisible}
+                transparent
                 animationType="fade"
+                onRequestClose={() => setIsConfirmVisible(false)}
             >
-                <View style={styles.confirmModalOverlay}>
-                    <View style={styles.confirmModalContainer}>
-                        <View style={styles.confirmIconContainer}>
-                            <Ionicons name="warning" size={48} color={COLORS.error} />
+                <View style={styles.confirmOverlay}>
+                    <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+                    <View style={styles.confirmContainer}>
+                        <View style={styles.confirmIcon}>
+                            <Ionicons name="warning" size={48} color={COLORS.danger} />
                         </View>
-                        <Text style={styles.confirmModalTitle}>Delete Entry?</Text>
-                        <Text style={styles.confirmModalText}>
+                        <Text style={styles.confirmTitle}>Delete Entry?</Text>
+                        <Text style={styles.confirmText}>
                             This action cannot be undone. The journal entry will be permanently deleted.
                         </Text>
-                        <View style={styles.confirmModalButtons}>
+                        <View style={styles.confirmButtons}>
                             <TouchableOpacity
-                                style={[styles.confirmButton, styles.cancelConfirmButton]}
-                                onPress={() => setIsConfirmModalVisible(false)}
-                                activeOpacity={0.8}
+                                style={[styles.confirmButton, styles.cancelButton]}
+                                onPress={() => setIsConfirmVisible(false)}
                             >
                                 <Text style={styles.cancelButtonText}>Cancel</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
-                                style={[styles.confirmButton, styles.deleteConfirmButton]}
+                                style={[styles.confirmButton, styles.deleteButton]}
                                 onPress={handleDeleteJournal}
-                                activeOpacity={0.8}
                             >
-                                <Text style={styles.confirmButtonText}>Delete</Text>
+                                <Text style={styles.deleteButtonText}>Delete</Text>
                             </TouchableOpacity>
                         </View>
                     </View>
@@ -609,392 +1142,595 @@ export default function JournalScreen() {
     );
 }
 
+/* ================================================================================
+   🎨 STYLES - Complete redesign matching NotesScreen
+   ================================================================================ */
+
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: COLORS.backgroundBase },
-    header: {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        alignItems: "center",
-        paddingTop: 50,
-        paddingHorizontal: 20,
-        marginBottom: 20,
-    },
-    headerTitle: { 
-        fontSize: 28, 
-        fontWeight: "700", 
-        color: COLORS.textPrimary,
-        letterSpacing: -0.4,
-    },
-    headerSubtitle: { 
-        fontSize: 13, 
-        color: COLORS.textSecondary, 
-        marginTop: 4,
-        fontWeight: "600",
-    },
-    addButton: {
-        backgroundColor: COLORS.accentBlush, 
-        borderRadius: 50,
-        width: 50,
-        height: 50,
-        alignItems: "center",
-        justifyContent: "center",
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 14,
-        elevation: 4,
-    },
-    searchSortContainer: {
-        flexDirection: "row",
-        alignItems: "center",
-        paddingHorizontal: 20,
-        marginBottom: 20,
-    },
-    searchInputContainer: {
+    screen: {
         flex: 1,
-        flexDirection: "row",
-        alignItems: "center",
-        height: 48,
-        borderColor: COLORS.lightBorder,
-        borderWidth: 0.5,
-        borderRadius: 12,
+        backgroundColor: COLORS.backgroundBase,
+    },
+    
+    // Header
+    header: {
         backgroundColor: COLORS.card,
-        marginRight: 10,
-        paddingHorizontal: 15,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
         shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.6,
+        shadowRadius: 16,
+        elevation: 8,
+        overflow: 'hidden',
+    },
+    headerContent: {
+        flex: 1,
+        paddingHorizontal: 20,
+        paddingTop: Platform.OS === 'ios' ? 50 : 18,
+        paddingBottom: 16,
+    },
+    headerTop: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    headerTitle: {
+        fontWeight: '900',
+        color: COLORS.textPrimary,
+        letterSpacing: -0.5,
+    },
+    headerSubtitle: {
+        fontSize: 14,
+        color: COLORS.textSecondary,
+        marginTop: 4,
+        fontWeight: '500',
+    },
+    headerRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    
+    // View Mode Toggle
+    viewModeToggle: {
+        flexDirection: 'row',
+        backgroundColor: COLORS.surfaceVariant,
+        borderRadius: 20,
+        padding: 4,
+    },
+    viewModeButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 16,
+    },
+    viewModeButtonActive: {
+        backgroundColor: COLORS.card,
+        shadowColor: COLORS.nudeShadow,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.4,
+        shadowRadius: 4,
         elevation: 2,
     },
-    searchIcon: {
-        marginRight: 8,
+    
+    // Add Button
+    addButton: {
+        borderRadius: 24,
+        overflow: 'hidden',
+        shadowColor: COLORS.accentWarm,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 4,
+    },
+    addButtonGradient: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    
+    // Search
+    searchContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: COLORS.surfaceVariant,
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+        borderWidth: 0,
     },
     searchInput: {
         flex: 1,
+        marginLeft: 8,
+        fontSize: 16,
         color: COLORS.textPrimary,
-        fontSize: 15,
     },
-    clearButton: {
-        padding: 4,
+    
+    // Sort Bar
+    sortBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 20,
+        paddingVertical: 12,
+        backgroundColor: COLORS.backgroundBase,
+    },
+    sortLabel: {
+        fontSize: 13,
+        color: COLORS.textSecondary,
+        fontWeight: '600',
     },
     sortButton: {
-        width: 48,
-        height: 48,
-        justifyContent: "center",
-        alignItems: "center",
-        borderColor: COLORS.lightBorder,
-        borderWidth: 0.5,
-        borderRadius: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
         backgroundColor: COLORS.card,
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 14,
-        elevation: 2,
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 20,
+        gap: 8,
+        borderWidth: 1,
+        borderColor: COLORS.cardBorder,
     },
-    scrollContent: { padding: 20, flexGrow: 1 },
-    emptyContainer: {
-        flex: 1,
-        justifyContent: "center",
-        alignItems: "center",
-        paddingVertical: 60,
+    sortButtonText: {
+        fontSize: 13,
+        color: COLORS.sage,
+        fontWeight: '600',
     },
-    emptyText: { 
-        textAlign: "center", 
-        marginTop: 20, 
-        color: COLORS.textPrimary, 
-        fontSize: 18,
-        fontWeight: "700",
-        letterSpacing: -0.3,
+    
+    // Journal List
+    journalListContent: {
+        paddingHorizontal: 20,
+        paddingTop: 8,
     },
-    emptySubtext: {
-        textAlign: "center",
-        marginTop: 8,
-        color: COLORS.completedText,
-        fontSize: 14,
-    },
+    
+    // Journal Card
     journalCard: {
-        backgroundColor: COLORS.card,
-        borderRadius: 14,
-        padding: 18,
-        marginBottom: 15,
-        borderWidth: 0.5,
-        borderColor: COLORS.accentBlush + "06",
+        marginBottom: 12,
+        borderRadius: 16,
+        overflow: 'hidden',
         shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 0.8,
-        shadowOffset: { width: 0, height: 8 },
-        shadowRadius: 18,
-        elevation: 6, 
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 3,
     },
-    journalHeader: {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        alignItems: "center",
-        borderBottomWidth: 1,
-        borderBottomColor: COLORS.lightBorder,
-        paddingBottom: 10,
-        marginBottom: 10,
+    journalCardList: {
+        width: '100%',
     },
-    journalTitle: { 
-        fontSize: 18, 
-        fontWeight: "700", 
-        color: COLORS.textPrimary, 
-        flexShrink: 1,
-        letterSpacing: -0.3,
+    journalCardGrid: {
+        width: (width - 52) / 2,
     },
-    journalActions: { flexDirection: "row" },
-    actionButton: { 
-        marginLeft: 10,
+    journalCardBlur: {
+        borderRadius: 16,
+        overflow: 'hidden',
+    },
+    journalCardTouchable: {
+        flex: 1,
+    },
+    journalCardHeader: {
+        flexDirection: 'row',
+    },
+    journalAccent: {
+        width: 4,
+        height: '100%',
+    },
+    journalContent: {
+        flex: 1,
+        padding: 16,
+    },
+    journalTitle: {
+        fontSize: 17,
+        fontWeight: '700',
+        color: COLORS.textPrimary,
+        marginBottom: 6,
+    },
+    journalPreviewText: {
+        fontSize: 14,
+        color: COLORS.textTertiary,
+        lineHeight: 20,
+        marginBottom: 8,
+    },
+    journalFooter: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    journalMetaItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    journalMetaText: {
+        fontSize: 11,
+        color: COLORS.textTertiary,
+        fontWeight: '500',
+    },
+    journalActionsOverlay: {
+        position: 'absolute',
+        top: 12,
+        right: 12,
+        flexDirection: 'row',
+        gap: 8,
+        backgroundColor: COLORS.card + 'CC',
+        borderRadius: 20,
         padding: 4,
     },
-    journalDate: { 
-        fontSize: 12, 
-        color: COLORS.textSecondary, 
-        marginBottom: 10, 
-        fontWeight: "600",
+    journalActionButton: {
+        padding: 6,
+        borderRadius: 16,
     },
-
-    // Success Message
-    successMessage: {
-        position: "absolute",
-        bottom: 40,
+    
+    // Quick Add
+    quickAddContainer: {
+        position: 'absolute',
+        bottom: 20,
         left: 20,
         right: 20,
-        backgroundColor: COLORS.success,
-        borderRadius: 12,
-        padding: 16,
-        flexDirection: "row",
-        alignItems: "center",
-        shadowColor: "#000",
-        shadowOpacity: 0.3,
-        shadowOffset: { width: 0, height: 4 },
-        shadowRadius: 8,
-        elevation: 6,
+        zIndex: 100,
     },
-    successText: {
-        color: "#fff",
+    quickAddBlur: {
+        borderRadius: 30,
+        overflow: 'hidden',
+    },
+    quickAddInner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+        backgroundColor: COLORS.card,
+        borderRadius: 30,
+        borderWidth: 1,
+        borderColor: COLORS.cardBorder,
+    },
+    quickAddInput: {
+        flex: 1,
+        marginLeft: 12,
+        fontSize: 16,
+        color: COLORS.textPrimary,
+    },
+    quickAddSubmit: {
+        marginLeft: 8,
+        borderRadius: 20,
+        overflow: 'hidden',
+    },
+    quickAddSubmitGradient: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    
+    // Loading
+    loadingContainer: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    loadingText: {
+        marginTop: 12,
+        fontSize: 16,
+        color: COLORS.textSecondary,
+        fontWeight: '500',
+    },
+    
+    // Empty State
+    emptyState: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 20,
+    },
+    emptyStateIcon: {
+        marginBottom: 16,
+    },
+    emptyTitle: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: COLORS.textPrimary,
+        marginBottom: 8,
+    },
+    emptyText: {
         fontSize: 15,
-        fontWeight: "600",
-        marginLeft: 10,
+        color: COLORS.textTertiary,
+        textAlign: 'center',
+        marginBottom: 24,
+        paddingHorizontal: 40,
     },
-
-    // Editor Modal Styles
+    emptyButton: {
+        borderRadius: 30,
+        overflow: 'hidden',
+        shadowColor: COLORS.accentWarm,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 4,
+    },
+    emptyButtonGradient: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 24,
+        paddingVertical: 14,
+        gap: 8,
+    },
+    emptyButtonText: {
+        color: 'white',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    
+    // Checklist Styles
+    checklistItem: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        marginBottom: 4,
+    },
+    checkboxContainer: {
+        marginRight: 8,
+        marginTop: 2,
+    },
+    checkbox: {
+        width: 18,
+        height: 18,
+        borderRadius: 4,
+        borderWidth: 2,
+        borderColor: COLORS.textSecondary,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: 'transparent',
+    },
+    checkboxChecked: {
+        backgroundColor: COLORS.accentBlush,
+        borderColor: COLORS.accentBlush,
+    },
+    checklistText: {
+        fontSize: 14,
+        color: COLORS.textPrimary,
+        flex: 1,
+        lineHeight: 20,
+    },
+    defaultListItem: {
+        marginBottom: 4,
+    },
+    defaultListText: {
+        fontSize: 14,
+        color: COLORS.textPrimary,
+        lineHeight: 20,
+    },
+    
+    // ==============================================================================
+    // 📝 JOURNAL EDITOR MODAL - Enhanced formatting visibility
+    // ==============================================================================
+    
     modalOverlay: {
         flex: 1,
-        backgroundColor: "rgba(0,0,0,0.3)",
+        backgroundColor: 'rgba(0,0,0,0.5)',
+    },
+    modalKeyboard: {
+        flex: 1,
+        justifyContent: 'flex-end',
     },
     modalContainer: {
         flex: 1,
-        backgroundColor: COLORS.backgroundBase,
-        padding: 20,
-        paddingTop: Platform.OS === "android" ? 40 : 60,
+        backgroundColor: COLORS.card,
+        paddingTop: Platform.OS === 'ios' ? 60 : 40,
     },
+    
+    // Modal Header
     modalHeader: {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 15,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingBottom: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: COLORS.cardBorder,
     },
-    modalTitle: { 
-        fontSize: 24, 
-        fontWeight: "700", 
+    modalCancelButton: {
+        paddingVertical: 8,
+        paddingHorizontal: 4,
+    },
+    modalCancelText: {
+        fontSize: 17,
+        color: COLORS.accentBlush,
+        fontWeight: '400',
+    },
+    modalTitle: {
+        fontSize: 17,
+        fontWeight: '600',
         color: COLORS.textPrimary,
-        letterSpacing: -0.4,
     },
-    modalSubtitle: { 
-        fontSize: 12, 
-        color: COLORS.textSecondary, 
-        marginTop: 4,
-        fontWeight: "600",
+    modalDoneButton: {
+        paddingVertical: 8,
+        paddingHorizontal: 4,
     },
-    titleInputContainer: {
-        marginBottom: 15,
+    modalDoneButtonDisabled: {
+        opacity: 0.5,
+    },
+    modalDoneText: {
+        fontSize: 17,
+        color: COLORS.sage,
+        fontWeight: '600',
+    },
+    modalDoneTextDisabled: {
+        color: COLORS.textTertiary,
+    },
+    
+    // Title Input
+    titleSection: {
+        paddingHorizontal: 20,
+        paddingTop: 16,
+        paddingBottom: 8,
+        backgroundColor: COLORS.card,
     },
     titleInput: {
-        backgroundColor: COLORS.card,
-        paddingHorizontal: 15,
-        paddingVertical: 16,
-        fontSize: 20,
-        fontWeight: "bold",
+        fontSize: 28,
+        fontWeight: '700',
         color: COLORS.textPrimary,
-        borderRadius: 12,
-        borderWidth: 0.5,
-        borderColor: COLORS.accentBlush + "22",
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 14,
-        elevation: 3,
+        padding: 0,
+        marginBottom: 4,
     },
     characterCount: {
-        position: 'absolute',
-        right: 12,
-        bottom: -20,
         fontSize: 12,
-        color: COLORS.textSecondary,
-        fontWeight: "600",
+        color: COLORS.textTertiary,
+        textAlign: 'right',
+        marginTop: 4,
     },
-    toolbarContainer: {
-        marginBottom: 15,
-        marginTop: 5,
+    
+    // Enhanced Formatting Toolbar
+    toolbarWrapper: {
+        borderTopWidth: 1,
+        borderTopColor: COLORS.cardBorder,
+        borderBottomWidth: 1,
+        borderBottomColor: COLORS.cardBorder,
+        backgroundColor: COLORS.surfaceVariant,
+        paddingVertical: 8,
     },
-    toolbarLabel: {
-        fontSize: 12,
-        fontWeight: '700',
-        color: COLORS.textSecondary,
-        marginBottom: 8,
-        marginLeft: 4,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
+    toolbarScrollContent: {
+        paddingHorizontal: 16,
+        gap: 4,
     },
     richToolbar: {
-        backgroundColor: COLORS.card,
-        borderWidth: 0.5,
-        borderColor: COLORS.accentBlush + "22",
-        borderRadius: 12,
-        paddingVertical: 8,
-        paddingHorizontal: 6,
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 14,
-        elevation: 3,
-        minHeight: 50,
+        backgroundColor: 'transparent',
+        borderWidth: 0,
+        padding: 0,
+        minHeight: 44,
     },
     toolbarIconContainer: {
-        width: 36,
-        height: 36,
+        width: 44,
+        height: 44,
         justifyContent: 'center',
         alignItems: 'center',
         borderRadius: 8,
         marginHorizontal: 2,
     },
+    toolbarIconContainerActive: {
+        backgroundColor: COLORS.formatActive,
+        shadowColor: COLORS.formatActive,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 3,
+    },
     toolbarText: {
-        fontSize: 18,
-        color: COLORS.textSecondary,
+        fontSize: 20,
     },
-    editorScrollView: {
+    toolbarTextBold: {
+        fontWeight: '800',
+    },
+    toolbarTextItalic: {
+        fontStyle: 'italic',
+    },
+    toolbarTextUnderline: {
+        textDecorationLine: 'underline',
+        textDecorationColor: COLORS.formatInactive,
+    },
+    toolbarSeparator: {
+        width: 1,
+        height: 24,
+        backgroundColor: COLORS.cardBorder,
+        marginHorizontal: 8,
+    },
+    
+    // Editor
+    editorContainer: {
         flex: 1,
-        marginBottom: 5,
-    },
-    editorScrollContent: {
-        flexGrow: 1,
+        backgroundColor: COLORS.card,
     },
     richEditor: {
         flex: 1,
         backgroundColor: COLORS.card,
-        color: COLORS.textPrimary,
-        borderColor: COLORS.accentBlush + "22",
-        borderWidth: 0.5,
-        borderRadius: 12,
-        minHeight: 350,
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 14,
-        elevation: 3,
     },
+    
+    // Editor Footer
     editorFooter: {
-        paddingVertical: 8,
-        paddingHorizontal: 4,
+        paddingHorizontal: 20,
+        paddingVertical: 12,
+        backgroundColor: COLORS.card,
+        borderTopWidth: 1,
+        borderTopColor: COLORS.cardBorder,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
     },
     editorHelper: {
-        fontSize: 12,
-        color: COLORS.textSecondary,
-        fontStyle: 'italic',
-        textAlign: 'center',
+        fontSize: 13,
+        color: COLORS.textTertiary,
     },
-    saveButton: {
-        backgroundColor: COLORS.textPrimary,
-        borderRadius: 12,
-        paddingVertical: 15,
-        alignItems: "center",
-        justifyContent: "center",
-        flexDirection: "row",
-        marginTop: 10,
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
-        shadowOffset: { width: 0, height: 8 },
-        shadowRadius: 16,
-        elevation: 6,
+    wordCount: {
+        fontSize: 13,
+        color: COLORS.textTertiary,
+        fontWeight: '500',
     },
-    saveButtonDisabled: {
-        backgroundColor: COLORS.completedText,
-    },
-    saveButtonText: { 
-        color: "#fff", 
-        fontSize: 17, 
-        fontWeight: "700",
-    },
-
-    // Confirmation Modal Styles
-    confirmModalOverlay: {
+    
+    // Confirmation Modal
+    confirmOverlay: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
         backgroundColor: 'rgba(0,0,0,0.5)',
     },
-    confirmModalContainer: {
-        width: '85%',
+    confirmContainer: {
+        width: width * 0.85,
         backgroundColor: COLORS.card,
-        borderRadius: 18,
-        padding: 25,
+        borderRadius: 14,
+        padding: 24,
         alignItems: 'center',
         shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 1,
         shadowOffset: { width: 0, height: 12 },
+        shadowOpacity: 0.8,
         shadowRadius: 20,
         elevation: 10,
     },
-    confirmIconContainer: {
-        marginBottom: 15,
+    confirmIcon: {
+        width: 64,
+        height: 64,
+        borderRadius: 32,
+        backgroundColor: COLORS.danger + '15',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 16,
     },
-    confirmModalTitle: {
+    confirmTitle: {
         fontSize: 20,
-        fontWeight: "700",
+        fontWeight: '700',
         color: COLORS.textPrimary,
-        marginBottom: 10,
-        letterSpacing: -0.3,
+        marginBottom: 8,
     },
-    confirmModalText: {
+    confirmText: {
         fontSize: 15,
-        textAlign: 'center',
-        marginBottom: 25,
         color: COLORS.textSecondary,
+        textAlign: 'center',
+        marginBottom: 24,
         lineHeight: 22,
     },
-    confirmModalButtons: {
+    confirmButtons: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
         width: '100%',
+        gap: 12,
     },
     confirmButton: {
         flex: 1,
-        padding: 14,
+        paddingVertical: 14,
         borderRadius: 12,
         alignItems: 'center',
-        marginHorizontal: 5,
-        shadowColor: COLORS.nudeShadow,
-        shadowOpacity: 0.8,
-        shadowOffset: { width: 0, height: 6 },
-        shadowRadius: 12,
-        elevation: 4,
     },
-    deleteConfirmButton: {
-        backgroundColor: COLORS.error,
-    },
-    cancelConfirmButton: {
-        backgroundColor: COLORS.textSecondary,
-    },
-    confirmButtonText: {
-        color: '#fff',
-        fontWeight: '700',
-        fontSize: 16,
+    cancelButton: {
+        backgroundColor: COLORS.surfaceVariant,
     },
     cancelButtonText: {
-        color: COLORS.card,
-        fontWeight: '700',
         fontSize: 16,
-    }
+        fontWeight: '600',
+        color: COLORS.textSecondary,
+    },
+    deleteButton: {
+        backgroundColor: COLORS.danger,
+    },
+    deleteButtonText: {
+        fontSize: 16,
+        fontWeight: '700',
+        color: 'white',
+    },
 });

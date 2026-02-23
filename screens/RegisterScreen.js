@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -15,7 +16,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  Modal,
 } from "react-native";
 import { useApp } from "../context/AppContext";
 import { auth, db } from "../firebaseConfig";
@@ -81,7 +81,29 @@ export default function RegisterScreen({ navigation }) {
     setLoading(true);
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
+      try {
+    const { doc, setDoc, serverTimestamp } = await import("firebase/firestore");
+    const { db } = await import("../firebaseConfig");
+    
+    const userRef = doc(db, "users", userCredential.user.uid);
+    await setDoc(userRef, {
+      uid: userCredential.user.uid,
+      email: userCredential.user.email || email,
+      username: username || email.split("@")[0],
+      displayName: username || email.split("@")[0],
+      profilePic: "",
+      bio: "",
+      notifications: [],
+      expoPushToken: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    console.log("✅ User profile created successfully");
+  } catch (profileError) {
+    console.warn("Could not create profile document:", profileError);
+    // Don't block registration if profile creation fails
+  }
+     
 
       // Update profile with display name
       await updateProfile(user, {
@@ -99,9 +121,10 @@ export default function RegisterScreen({ navigation }) {
         privacyAcceptedDate: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
+        
       });
 
-      setUser(user);
+     
       Alert.alert("Success", "Account created successfully!");
     } catch (error) {
       console.error("Registration error:", error);

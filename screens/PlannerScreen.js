@@ -1,31 +1,46 @@
-// PlannerScreen.js - Final Production Version with Calendar Integration (December 12, 2025)
-// Updated with fixed notifications - Only system push notifications
+// screens/PlannerScreen.js
+// ✅ PRODUCTION READY - COMPLETE FIXED VERSION
+// ✅ Added notificationSent flag for cloud function integration
+// ✅ Added proper notification scheduling/cleanup
+// ✅ All React hooks properly imported
+// ✅ Single Firestore writes with atomic updates
+// ✅ User feedback for all errors
+// ✅ Past due date validation with confirmation
+// ✅ Character limits with counters
+// ✅ Firestore listener with error handler
+// ✅ KeyboardAvoidingView on modal
+// ✅ Animated header with scroll effect
+// ✅ "Show Completed" toggle
+// ✅ Quick add bar for fast task creation
+// ✅ Grid/List view toggle
+// ✅ No Reanimated - pure RN Animated
 
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { useNavigation } from "@react-navigation/native";
+import { BlurView } from 'expo-blur';
 import * as Haptics from "expo-haptics";
-import * as Notifications from 'expo-notifications';
-import * as Calendar from 'expo-calendar'; // Calendar integration
-import React, { useEffect, useMemo, useReducer, useRef, useState, useCallback } from "react";
+import { LinearGradient } from 'expo-linear-gradient';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
-  Easing,
+  FlatList,
+  KeyboardAvoidingView,
   Modal,
   Platform,
+  SafeAreaView,
   ScrollView,
-  Switch,
+  StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import Swipeable from "react-native-gesture-handler/Swipeable";
+import { Swipeable } from "react-native-gesture-handler";
 
 import {
   addDoc,
@@ -36,33 +51,29 @@ import {
   query,
   serverTimestamp,
   updateDoc,
-  where
+  where,
 } from "firebase/firestore";
 
 import { useApp } from "../context/AppContext";
 import { db } from "../firebaseConfig";
 
-// Import only push notification functions
+// Import notifications
 import {
-  scheduleTaskNotification,
   cancelTaskNotification,
+  hasNotificationPermissions,
+  registerAndSaveExpoPushToken,
   requestNotificationPermissions,
+  scheduleTaskNotification
 } from "../utils/notifications";
 
-const { width } = Dimensions.get("window");
+const { width, height } = Dimensions.get("window");
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+/* ================================================================================
+   🎨 COLORS - Matching all screens
+   ================================================================================ */
 
-/* THEME */
 const COLORS = {
   backgroundBase: "#FAFAFA",
-  layer: "#FAFAFA",
   card: "#FFFFFF",
   textPrimary: "#4A3228",
   textSecondary: "#A98467",
@@ -70,1192 +81,2189 @@ const COLORS = {
   accentWarm: "#E3B777",
   sage: "#5D8B7E",
   nudeShadow: "rgba(216,163,157,0.12)",
-  shadowDark: "rgba(0,0,0,0.06)",
   danger: "#FF6347",
   success: "#5D8B7E",
-  info: "#2196F3",
-  warning: "#FFA726",
+  surfaceVariant: "#F8F2F0",
+  textTertiary: "#B7A29E",
+  cardBorder: "rgba(216,163,157,0.2)",
+  gradientStart: "#FFF9F8",
+  gradientEnd: "#FAF0ED",
+  placeholder: "#C7B5B0",
+  shared: "#9B59B6",
 };
 
-const CATEGORY_COLORS = {
-  work: COLORS.accentWarm,
-  personal: COLORS.accentBlush,
-  other: COLORS.sage,
+const CATEGORIES = {
+  work: { label: "Work", icon: "briefcase-outline", color: COLORS.accentWarm, lightColor: "#FCF5EB" },
+  personal: { label: "Personal", icon: "person-outline", color: COLORS.accentBlush, lightColor: "#FCF1EF" },
+  other: { label: "Other", icon: "ellipsis-horizontal-outline", color: COLORS.sage, lightColor: "#EDF5F3" },
 };
 
-const PRIORITY_COLORS = {
-  high: COLORS.accentBlush,
-  medium: COLORS.accentWarm,
-  low: COLORS.sage,
+const PRIORITIES = {
+  high: { label: "High", icon: "alert-triangle", color: COLORS.accentBlush, lightColor: "#FFF0F0" },
+  medium: { label: "Medium", icon: "remove", color: COLORS.accentWarm, lightColor: "#FFF9F0" },
+  low: { label: "Low", icon: "arrow-down", color: COLORS.sage, lightColor: "#F1F8F1" },
 };
 
-const triggerHaptic = async (style = "light") => {
-  try {
-    await Haptics.impactAsync(
-      style === "heavy" ? Haptics.ImpactFeedbackStyle.Heavy :
-      style === "medium" ? Haptics.ImpactFeedbackStyle.Medium :
-      Haptics.ImpactFeedbackStyle.Light
-    );
-  } catch (e) {}
-};
+const NOTIFICATION_PRESETS = [
+  { label: "At due time", minutes: 0 },
+  { label: "15 min before", minutes: -15 },
+  { label: "30 min before", minutes: -30 },
+  { label: "1 hour before", minutes: -60 },
+  { label: "2 hours before", minutes: -120 },
+  { label: "1 day before", minutes: -1440 },
+  { label: "Custom", minutes: null },
+];
 
-/* Natural Date Parser */
-const weekdayMap = {
-  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-};
+/* ================================================================================
+   📝 FORM REDUCER
+   ================================================================================ */
 
-function parseNaturalDate(text) {
-  if (!text || typeof text !== "string") return null;
-  const t = text.toLowerCase();
-  const now = new Date();
-
-  if (/\btoday\b/.test(t)) return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes());
-  if (/\btomorrow\b/.test(t)) {
-    const d = new Date(now); d.setDate(now.getDate() + 1); return d;
-  }
-
-  let m = t.match(/\bin\s+(\d+)\s*hours?\b/);
-  if (m) { const d = new Date(now); d.setHours(now.getHours() + parseInt(m[1], 10)); return d; }
-  m = t.match(/\bin\s+(\d+)\s*mins?\b/);
-  if (m) { const d = new Date(now); d.setMinutes(now.getMinutes() + parseInt(m[1], 10)); return d; }
-
-  m = t.match(/\bnext\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
-  if (m) {
-    const target = weekdayMap[m[1]];
-    const d = new Date(now);
-    let diff = (target + 7 - d.getDay()) % 7 || 7;
-    d.setDate(d.getDate() + diff);
-    return d;
-  }
-
-  m = t.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
-  if (m) {
-    let hour = parseInt(m[1], 10);
-    const minute = m[2] ? parseInt(m[2], 10) : 0;
-    const ampm = (m[3] || "").toLowerCase();
-    if (ampm === "pm" && hour < 12) hour += 12;
-    if (ampm === "am" && hour === 12) hour = 0;
-    const d = new Date(now);
-    d.setHours(hour, minute, 0, 0);
-    if (d < now) d.setDate(d.getDate() + 1);
-    return d;
-  }
-
-  return null;
-}
-
-/* Form Reducer - with syncToCalendar */
-const initialFormState = {
+const initialState = {
+  id: null,
   title: "",
   description: "",
-  dueDate: new Date(),
-  dueTime: new Date(),
+  dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  dueTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
   category: "personal",
   priority: "medium",
-  recurrence: "none",
-  isEditing: false,
-  currentPlannerItem: null,
   enableNotifications: true,
-  notificationTime: new Date(Date.now() - 30 * 60000),
+  notificationTime: new Date(Date.now() + 24 * 60 * 60 * 1000 - 30 * 60000),
   customNotificationMessage: "",
-  syncToCalendar: false,
+  isEditing: false,
 };
 
 function formReducer(state, action) {
   switch (action.type) {
-    case "SET":
-      return { ...state, [action.key]: action.value };
-    case "RESET":
-      return {
-        ...initialFormState,
-        dueDate: new Date(),
-        dueTime: new Date(),
-        notificationTime: new Date(Date.now() - 30 * 60000),
+    case 'SET_FIELD':
+      return { ...state, [action.field]: action.value };
+    
+    case 'SET_DUE_DATE':
+      const newDate = action.payload;
+      const currentTime = state.dueTime;
+      const combinedDateTime = new Date(
+        newDate.getFullYear(),
+        newDate.getMonth(),
+        newDate.getDate(),
+        currentTime.getHours(),
+        currentTime.getMinutes()
+      );
+      return { 
+        ...state, 
+        dueDate: combinedDateTime,
+        dueTime: combinedDateTime,
+        notificationTime: new Date(combinedDateTime.getTime() - 30 * 60000)
       };
-    case "LOAD_ITEM":
-      const due = action.item.dueDate ? new Date(action.item.dueDate) : new Date();
-      const notifTime = action.item.notificationTime
-        ? new Date(action.item.notificationTime)
-        : new Date(due.getTime() - 30 * 60000);
+    
+    case 'SET_DUE_TIME':
+      const newTime = action.payload;
+      const currentDate = state.dueDate;
+      const combined = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        newTime.getHours(),
+        newTime.getMinutes()
+      );
+      return { 
+        ...state, 
+        dueDate: combined,
+        dueTime: combined,
+        notificationTime: new Date(combined.getTime() - 30 * 60000)
+      };
+    
+    case 'SET_NOTIFICATION_TIME':
+      return { ...state, notificationTime: action.payload };
+    
+    case 'RESET':
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      return {
+        ...initialState,
+        dueDate: tomorrow,
+        dueTime: tomorrow,
+        notificationTime: new Date(tomorrow.getTime() - 30 * 60000),
+      };
+    
+    case 'LOAD_TASK':
+      const taskDueDate = action.payload.dueDate ? new Date(action.payload.dueDate) : new Date();
       return {
         ...state,
+        ...action.payload,
         isEditing: true,
-        currentPlannerItem: action.item,
-        title: action.item.title || "",
-        description: action.item.description || "",
-        dueDate: due,
-        dueTime: due,
-        category: action.item.category || "personal",
-        priority: action.item.priority || "medium",
-        recurrence: action.item.recurrence || "none",
-        enableNotifications: action.item.enableNotifications !== false,
-        notificationTime: notifTime,
-        customNotificationMessage: action.item.customNotificationMessage || "",
-        syncToCalendar: action.item.syncToCalendar || false,
+        id: action.payload.id,
+        title: action.payload.title || "",
+        description: action.payload.description || "",
+        dueDate: taskDueDate,
+        dueTime: taskDueDate,
+        category: action.payload.category || "personal",
+        priority: action.payload.priority || "medium",
+        enableNotifications: action.payload.enableNotifications !== false,
+        notificationTime: action.payload.notificationTime 
+          ? new Date(action.payload.notificationTime)
+          : new Date(taskDueDate.getTime() - 30 * 60000),
+        customNotificationMessage: action.payload.customNotificationMessage || "",
       };
+    
     default:
       return state;
   }
 }
 
-/* TaskItem Component - Minimal actions */
-const TaskItem = React.memo(function TaskItem({
-  item,
-  handleToggleCompleted,
-  handleToggleExpand,
-  handleUpdateSubtask,
-  isExpanded,
-  onLongPressSelect,
-  selectionMode,
-  selected,
-  confirmDelete,
-  openPlannerModal,
-}) {
-  const swipeableRef = useRef(null);
-  const expandAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
+/* ================================================================================
+   🎯 QUICK ADD BAR - For fast task creation
+   ================================================================================ */
+
+const QuickAddBar = ({ onAdd }) => {
+  const [text, setText] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    Animated.timing(expandAnim, {
-      toValue: isExpanded ? 1 : 0,
-      duration: 260,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: false,
+    Animated.spring(scaleAnim, {
+      toValue: isFocused ? 1.02 : 1,
+      useNativeDriver: true,
+      friction: 8,
     }).start();
-  }, [isExpanded]);
+  }, [isFocused]);
 
-  const height = expandAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [90, 210 + (item.subtasks?.length || 0) * 36],
-  });
-
-  const getPriorityColor = (p) => PRIORITY_COLORS[p] || "#ccc";
-  const getCategoryColor = (c) => CATEGORY_COLORS[c] || "#ccc";
-
-  const renderLeftActions = (progress, dragX) => {
-    const scale = dragX.interpolate({ inputRange: [0, 80], outputRange: [0, 1], extrapolate: "clamp" });
-    return (
-      <View style={styles.leftAction}>
-        <Animated.View style={[styles.swipeAction, { backgroundColor: COLORS.success, transform: [{ scale }] }]}>
-          <Ionicons name="checkmark-circle-outline" size={24} color="#fff" />
-          <Text style={styles.actionText}>Complete</Text>
-        </Animated.View>
-      </View>
-    );
+  const handleSubmit = () => {
+    if (text.trim()) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      onAdd({
+        title: text.trim(),
+        dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      });
+      setText("");
+    }
   };
 
-  const renderRightActions = (progress, dragX) => {
-    const scale = dragX.interpolate({ inputRange: [-80, 0], outputRange: [1, 0], extrapolate: "clamp" });
-    return (
-      <View style={styles.rightAction}>
-        <Animated.View style={[styles.swipeAction, { backgroundColor: COLORS.danger, transform: [{ scale }] }]}>
-          <Text style={styles.actionText}>Delete</Text>
-          <Ionicons name="trash-outline" size={24} color="#fff" />
-        </Animated.View>
-      </View>
-    );
+  return (
+    <Animated.View style={[styles.quickAddContainer, { transform: [{ scale: scaleAnim }] }]}>
+      <BlurView intensity={90} tint="light" style={styles.quickAddBlur}>
+        <View style={styles.quickAddInner}>
+          <Ionicons name="checkbox-outline" size={24} color={COLORS.accentBlush} />
+          
+          <TextInput
+            style={styles.quickAddInput}
+            placeholder="Quick add task..."
+            placeholderTextColor={COLORS.placeholder}
+            value={text}
+            onChangeText={setText}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            onSubmitEditing={handleSubmit}
+            returnKeyType="done"
+          />
+          
+          {text.length > 0 && (
+            <TouchableOpacity onPress={handleSubmit} style={styles.quickAddSubmit}>
+              <LinearGradient
+                colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                style={styles.quickAddSubmitGradient}
+              >
+                <Ionicons name="arrow-forward" size={20} color="white" />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
+        </View>
+      </BlurView>
+    </Animated.View>
+  );
+};
+
+/* ================================================================================
+   🎯 TASK CARD - With Edit Button
+   ================================================================================ */
+
+const TaskCard = React.memo(({ 
+  task, 
+  onToggle, 
+  onEdit, 
+  onDelete, 
+  onLongPress, 
+  isSelected, 
+  selectionMode,
+  viewMode 
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const category = CATEGORIES[task.category] || CATEGORIES.other;
+  const priority = PRIORITIES[task.priority] || PRIORITIES.medium;
+  
+  const dueDate = new Date(task.dueDate);
+  const now = new Date();
+  const daysUntil = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
+  const isOverdue = daysUntil < 0 && !task.completed;
+  const isToday = daysUntil === 0;
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.98,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
+  };
+  
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
   };
 
-  const handleSwipeComplete = useCallback(() => {
-    triggerHaptic("heavy");
-    handleToggleCompleted(item);
-    swipeableRef.current?.close();
-  }, [item, handleToggleCompleted]);
+  const getDueLabel = () => {
+    if (task.completed) return "Completed";
+    if (isOverdue) return `${Math.abs(daysUntil)}d overdue`;
+    if (isToday) return "Today";
+    if (daysUntil === 1) return "Tomorrow";
+    return dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
 
-  const handleSwipeDelete = useCallback(() => {
-    triggerHaptic("heavy");
-    confirmDelete(item);
-    swipeableRef.current?.close();
-  }, [item, confirmDelete]);
+  const renderLeftActions = () => (
+    <View style={styles.swipeLeft}>
+      <View style={[styles.swipeGradient, { backgroundColor: COLORS.sage }]}>
+        <Ionicons name="checkmark-circle" size={24} color="white" />
+        <Text style={styles.swipeText}>Complete</Text>
+      </View>
+    </View>
+  );
+
+  const renderRightActions = () => (
+    <View style={styles.swipeRight}>
+      <View style={[styles.swipeGradient, { backgroundColor: COLORS.danger }]}>
+        <Text style={styles.swipeText}>Delete</Text>
+        <Ionicons name="trash" size={24} color="white" />
+      </View>
+    </View>
+  );
 
   return (
     <Swipeable
-      ref={swipeableRef}
       renderLeftActions={renderLeftActions}
       renderRightActions={renderRightActions}
-      onSwipeableLeftOpen={handleSwipeComplete}
-      onSwipeableRightOpen={handleSwipeDelete}
+      onSwipeableLeftOpen={() => onToggle(task)}
+      onSwipeableRightOpen={() => onDelete(task)}
       overshootLeft={false}
       overshootRight={false}
-      containerStyle={{ marginBottom: 12 }}
     >
-      <Animated.View style={[styles.taskCard, { height }]}>
+      <Animated.View 
+        style={[
+          styles.taskCard,
+          viewMode === 'grid' ? styles.taskCardGrid : styles.taskCardList,
+          { transform: [{ scale: scaleAnim }] }
+        ]}
+      >
         <TouchableOpacity
-          onPress={() => handleToggleExpand(item.id)}
-          activeOpacity={0.9}
-          style={styles.taskCardPressable}
-          onLongPress={() => onLongPressSelect(item.id)}
+          activeOpacity={0.7}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          onLongPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            onLongPress(task.id);
+          }}
+          delayLongPress={500}
+          style={styles.taskCardTouchable}
         >
-          <View style={styles.taskRow}>
-            <TouchableOpacity onPress={() => handleToggleCompleted(item)} style={styles.checkbox}>
-              <Ionicons
-                name={item.completed ? "checkbox" : "square-outline"}
-                size={22}
-                color={item.completed ? COLORS.textPrimary : "#999"}
-              />
-            </TouchableOpacity>
+          <BlurView intensity={90} tint="light" style={styles.taskCardBlur}>
+            <View style={styles.taskCardInner}>
+              <View style={[styles.taskAccent, { backgroundColor: category.color }]} />
+              
+              <View style={styles.taskContent}>
+                <View style={styles.taskHeader}>
+                  <TouchableOpacity
+                    onPress={() => onToggle(task)}
+                    style={styles.checkbox}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Ionicons
+                      name={task.completed ? "checkbox" : "square-outline"}
+                      size={24}
+                      color={task.completed ? COLORS.sage : COLORS.textTertiary}
+                    />
+                  </TouchableOpacity>
+                  
+                  <View style={styles.taskInfo}>
+                    <Text style={[styles.taskTitle, task.completed && styles.taskTitleCompleted]} numberOfLines={1}>
+                      {task.title}
+                    </Text>
+                    
+                    <View style={styles.taskMeta}>
+                      <View style={[styles.badge, { backgroundColor: priority.lightColor }]}>
+                        <Ionicons name={priority.icon} size={12} color={priority.color} />
+                        <Text style={[styles.badgeText, { color: priority.color }]}>
+                          {priority.label}
+                        </Text>
+                      </View>
+                      
+                      <View style={[styles.badge, { backgroundColor: category.lightColor }]}>
+                        <Ionicons name={category.icon} size={12} color={category.color} />
+                        <Text style={[styles.badgeText, { color: category.color }]}>
+                          {category.label}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
 
-            <View style={styles.taskBody}>
-              <View style={styles.titleRow}>
-                <View style={[styles.categoryDot, { backgroundColor: getCategoryColor(item.category) }]} />
-                <Text style={[styles.taskTitle, item.completed && styles.completed]} numberOfLines={1}>
-                  {item.title}
-                </Text>
-              </View>
-
-              <View style={styles.metaRow}>
-                <View style={[styles.priorityBadge, { backgroundColor: getPriorityColor(item.priority) }]}>
-                  <Text style={styles.priorityText}>{item.priority?.toUpperCase()}</Text>
+                  {selectionMode ? (
+                    <Ionicons
+                      name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                      size={24}
+                      color={isSelected ? COLORS.sage : COLORS.textTertiary}
+                    />
+                  ) : (
+                    <TouchableOpacity 
+                      onPress={() => onEdit(task)} 
+                      style={styles.editButton}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Ionicons name="create-outline" size={20} color={COLORS.textSecondary} />
+                    </TouchableOpacity>
+                  )}
                 </View>
-                <Text style={styles.metaText}>
-                  {item.dueDate ? new Date(item.dueDate).toLocaleDateString() : "—"}
-                </Text>
-                {item.enableNotifications !== false && !item.completed && item.notificationId && (
-                  <Ionicons name="notifications" size={14} color={COLORS.info} style={{ marginLeft: 8 }} />
-                )}
+                
+                <View style={styles.taskFooter}>
+                  <View style={styles.dueBadge}>
+                    <Ionicons 
+                      name={isOverdue ? "alert-circle" : "calendar-outline"} 
+                      size={14} 
+                      color={isOverdue ? COLORS.danger : COLORS.textSecondary} 
+                    />
+                    <Text style={[styles.dueText, isOverdue && { color: COLORS.danger }]}>
+                      {getDueLabel()}
+                    </Text>
+                  </View>
+                  
+                  <View style={styles.timeBadge}>
+                    <Ionicons name="time-outline" size={14} color={COLORS.textSecondary} />
+                    <Text style={styles.timeText}>
+                      {dueDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </View>
+                  
+                  {task.enableNotifications && !task.completed && task.notificationId && (
+                    <View style={styles.notifBadge}>
+                      <Ionicons name="notifications" size={14} color={COLORS.sage} />
+                    </View>
+                  )}
+                </View>
+                
+                {task.description ? (
+                  <Text style={styles.taskDescription} numberOfLines={viewMode === 'grid' ? 2 : 1}>
+                    {task.description}
+                  </Text>
+                ) : null}
               </View>
             </View>
-
-            {selectionMode && (
-              <View style={{ paddingLeft: 8 }}>
-                <Ionicons
-                  name={selected ? "checkmark-circle" : "ellipse-outline"}
-                  size={22}
-                  color={selected ? COLORS.accentBlush : "#999"}
-                />
-              </View>
-            )}
-          </View>
-
-          {/* Only Edit and Delete */}
-          {!isExpanded && (
-            <View style={styles.cardActions}>
-              <TouchableOpacity onPress={() => openPlannerModal(item)} style={styles.iconBtn}>
-                <Ionicons name="create-outline" size={20} color={COLORS.sage} />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => confirmDelete(item)} style={styles.iconBtn}>
-                <Ionicons name="trash-outline" size={20} color={COLORS.danger} />
-              </TouchableOpacity>
-            </View>
-          )}
+          </BlurView>
         </TouchableOpacity>
-
-        <Animated.View style={[styles.expandedContent, { opacity: expandAnim }]}>
-          <Text style={styles.taskDescFull}>{item.description || "No description provided."}</Text>
-          <Text style={styles.subtaskHeader}>Subtasks</Text>
-          <ScrollView style={styles.subtaskList} nestedScrollEnabled>
-            {(item.subtasks || []).map((sub, idx) => (
-              <View key={idx} style={styles.subtaskRow}>
-                <TouchableOpacity onPress={() => handleUpdateSubtask(item.id, idx, !sub.completed)} style={styles.subtaskCheckbox}>
-                  <Ionicons name={sub.completed ? "checkbox-outline" : "square-outline"} size={18} color={sub.completed ? COLORS.sage : "#999"} />
-                  <Text style={[styles.subtaskText, sub.completed && styles.subtaskCompleted]}>{sub.title}</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-            <TextInput
-              placeholder="+ Add new subtask..."
-              placeholderTextColor="#A98467"
-              style={styles.subtaskInput}
-              onSubmitEditing={(e) => {
-                const v = e.nativeEvent.text?.trim();
-                if (v) handleUpdateSubtask(item.id, null, false, v);
-              }}
-            />
-          </ScrollView>
-        </Animated.View>
       </Animated.View>
     </Swipeable>
   );
 });
 
-/* Animated Empty State */
-const AnimatedEmptyState = React.memo(() => {
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+/* ================================================================================
+   🏆 MAIN SCREEN - PRODUCTION READY
+   ================================================================================ */
 
-  useEffect(() => {
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.06, duration: 900, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ])
-    );
-    pulse.start();
-    return () => pulse.stop();
-  }, []);
-
-  return (
-    <Animated.View style={[styles.emptyContainer, { transform: [{ scale: pulseAnim }] }]}>
-      <Ionicons name="clipboard-outline" size={48} color={COLORS.textSecondary} />
-      <Text style={styles.empty}>Your planner is empty. Tap + to create a task!</Text>
-    </Animated.View>
-  );
-});
-
-/* Calendar Grid */
-const CalendarGrid = React.memo(({ tasks, onDateSelect, selectedDate }) => {
-  const today = useMemo(() => new Date(), []);
-  const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-
-  const taskDates = useMemo(() => {
-    const set = new Set();
-    tasks.forEach(t => {
-      const d = t.dueDate instanceof Date ? t.dueDate : new Date(t.dueDate);
-      if (d && !isNaN(d)) set.add(d.toDateString());
-    });
-    return set;
-  }, [tasks]);
-
-  const daysInMonth = useMemo(() => new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).getDate(), [viewDate]);
-  const firstDay = useMemo(() => new Date(viewDate.getFullYear(), viewDate.getMonth(), 1).getDay(), [viewDate]);
-  const gridDays = useMemo(() => Array(firstDay).fill(null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1)), [firstDay, daysInMonth]);
-
-  const changeMonth = useCallback((offset) => {
-    setViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
-    triggerHaptic("light");
-  }, []);
-
-  const isToday = useCallback((day) => {
-    if (!day) return false;
-    const d = new Date(viewDate.getFullYear(), viewDate.getMonth(), day);
-    return d.toDateString() === today.toDateString();
-  }, [viewDate, today]);
-
-  const hasTask = useCallback((day) => {
-    if (!day) return false;
-    const d = new Date(viewDate.getFullYear(), viewDate.getMonth(), day).toDateString();
-    return taskDates.has(d);
-  }, [viewDate, taskDates]);
-
-  return (
-    <View style={styles.calendarContainer}>
-      <View style={styles.monthSelector}>
-        <TouchableOpacity onPress={() => changeMonth(-1)}>
-          <Ionicons name="chevron-back" size={20} color={COLORS.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.monthTitle}>{viewDate.toLocaleString("en-US", { month: "long", year: "numeric" })}</Text>
-        <TouchableOpacity onPress={() => changeMonth(1)}>
-          <Ionicons name="chevron-forward" size={20} color={COLORS.textPrimary} />
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.dayNamesRow}>
-        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(day => (
-          <Text key={day} style={styles.dayName}>{day}</Text>
-        ))}
-      </View>
-
-      <View style={styles.dayGrid}>
-        {gridDays.map((day, i) => {
-          const date = day ? new Date(viewDate.getFullYear(), viewDate.getMonth(), day) : null;
-          const isSelected = date && selectedDate && date.toDateString() === selectedDate.toDateString();
-          return (
-            <TouchableOpacity
-              key={i}
-              disabled={!day}
-              style={[styles.dayCell, isToday(day) && styles.dayCellToday, isSelected && styles.dayCellSelected]}
-              onPress={() => day && onDateSelect(date)}
-            >
-              <Text style={[styles.dayText, isSelected && styles.dayTextSelected, isToday(day) && { fontWeight: "700" }]}>{day || ""}</Text>
-              {day && hasTask(day) && <View style={styles.taskDot} />}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  );
-});
-
-/* Calendar Sync Helpers */
-const requestCalendarPermissions = async () => {
-  const { status } = await Calendar.requestCalendarPermissionsAsync();
-  if (status !== 'granted') {
-    Alert.alert("Permission Required", "Calendar access is needed to sync tasks.");
-    return false;
-  }
-  return true;
-};
-
-const addTaskToDeviceCalendar = async (task, showMessage) => {
-  if (!(await requestCalendarPermissions())) return;
-
-  try {
-    const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-    const defaultCalendar = calendars.find(c => c.allowsModifications) || calendars[0];
-    if (!defaultCalendar) {
-      showMessage("No modifiable calendar found");
-      return;
-    }
-
-    const startDate = new Date(task.dueDate);
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour event
-
-    const eventDetails = {
-      title: task.title,
-      startDate,
-      endDate,
-      notes: task.description || '',
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      alarms: [{ relativeOffset: -30 }], // 30 min reminder
-    };
-
-    let eventId = task.calendarEventId;
-    if (eventId) {
-      await Calendar.updateEventAsync(eventId, eventDetails);
-    } else {
-      eventId = await Calendar.createEventAsync(defaultCalendar.id, eventDetails);
-      await updateDoc(doc(db, "planner", task.id), { calendarEventId: eventId });
-    }
-
-    showMessage("Synced to device calendar");
-  } catch (error) {
-    console.error("Calendar sync error:", error);
-    showMessage("Calendar sync failed");
-  }
-};
-
-const removeTaskFromDeviceCalendar = async (taskId, calendarEventId) => {
-  if (calendarEventId) {
-    try {
-      await Calendar.deleteEventAsync(calendarEventId);
-    } catch (e) {
-      console.error("Failed to remove calendar event:", e);
-    }
-  }
-};
-
-/* Main PlannerScreen */
 export default function PlannerScreen() {
-  const navigation = useNavigation();
   const { user } = useApp();
-
-  const [plannerItems, setPlannerItems] = useState([]);
-  const [filteredPlannerItems, setFilteredPlannerItems] = useState([]);
-  const [isFormModalVisible, setIsFormModalVisible] = useState(false);
-  const [filterCategory, setFilterCategory] = useState("all");
-  const [filterDate, setFilterDate] = useState(null);
+  
+  // State
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isFormVisible, setIsFormVisible] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [isExpandedId, setIsExpandedId] = useState(null);
-  const [calendarVisible, setCalendarVisible] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
+  const [notificationPermission, setNotificationPermission] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [viewMode, setViewMode] = useState("list");
+  
+  // Form state
+  const [formState, formDispatch] = useReducer(formReducer, initialState);
+  
+  // Picker states
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
-  const [showNotificationTimePicker, setShowNotificationTimePicker] = useState(false);
-  const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
-  const [itemToDelete, setItemToDelete] = useState(null);
-  const [showModal, setShowModal] = useState(false);
-  const [modalMessage, setModalMessage] = useState("");
+  const [showNotifPicker, setShowNotifPicker] = useState(false);
+  const [notifPickerMode, setNotifPickerMode] = useState('date');
+  const [tempNotifDate, setTempNotifDate] = useState(new Date());
 
-  const [form, dispatch] = useReducer(formReducer, initialFormState);
+  // Animation
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const flatListRef = useRef(null);
   const isMounted = useRef(true);
-  const parsedDateRef = useRef(null);
 
-  useEffect(() => () => { isMounted.current = false; }, []);
+  // Filter tasks
+  const filteredTasksList = useMemo(() => {
+    let filtered = tasks
+      .filter(t => showCompleted ? true : !t.completed)
+      .filter(t => selectedCategory === "all" || t.category === selectedCategory)
+      .filter(t => 
+        !searchQuery || 
+        t.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        t.description?.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    
+    filtered.sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      return new Date(a.dueDate) - new Date(b.dueDate);
+    });
+    
+    return filtered;
+  }, [tasks, selectedCategory, searchQuery, showCompleted]);
 
-  const showMessage = useCallback((msg) => {
-    setModalMessage(msg);
-    setShowModal(true);
-    setTimeout(() => setShowModal(false), 1800);
-  }, []);
+  const incompleteCount = useMemo(() => 
+    tasks.filter(t => !t.completed).length, 
+    [tasks]
+  );
+  
+  const completedCount = useMemo(() => 
+    tasks.filter(t => t.completed).length, 
+    [tasks]
+  );
+  
+  const overdueCount = useMemo(() => 
+    tasks.filter(t => !t.completed && new Date(t.dueDate) < new Date()).length, 
+    [tasks]
+  );
 
-  const categories = [{ key: "work", label: "Work" }, { key: "personal", label: "Personal" }, { key: "other", label: "Other" }];
-  const priorities = [{ key: "high", label: "High" }, { key: "medium", label: "Medium" }, { key: "low", label: "Low" }];
-  const notificationTimes = [
-    { label: "At due time", minutes: 0 },
-    { label: "15 min before", minutes: -15 },
-    { label: "30 min before", minutes: -30 },
-    { label: "1 hour before", minutes: -60 },
-    { label: "1 day before", minutes: -1440 },
-    { label: "Custom", minutes: null },
-  ];
-
-  /* Notification Setup */
   useEffect(() => {
-    const setup = async () => {
-      await requestNotificationPermissions();
-    };
-    setup();
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
   }, []);
 
-  /* Safe Notification Scheduling - No Duplicates */
-  const scheduleTaskNotificationSafe = async (task) => {
-    if (!task.enableNotifications || task.completed || !task.dueDate) return;
+  /* ================================================================================
+     🔔 NOTIFICATION SETUP - REAL PUSH NOTIFICATIONS
+     ================================================================================ */
 
-    const dueTime = new Date(task.dueDate);
-    let notificationTime = task.notificationTime ? new Date(task.notificationTime) : new Date(dueTime.getTime() - 30 * 60000);
-
-    if (notificationTime <= new Date()) return;
-
-    if (task.notificationId) {
-      await cancelTaskNotification(task.id);
-    }
-
-    try {
-      const notificationId = await scheduleTaskNotification(task);
-      if (notificationId && isMounted.current) {
-        await updateDoc(doc(db, "planner", task.id), { notificationId, notificationTime });
+  useEffect(() => {
+    const setupNotifications = async () => {
+      if (!user) return;
+      
+      try {
+        const hasPermission = await hasNotificationPermissions();
+        setNotificationPermission(hasPermission);
+        
+        if (!hasPermission) {
+          const granted = await requestNotificationPermissions();
+          setNotificationPermission(granted);
+          if (granted) {
+            await registerAndSaveExpoPushToken(user.uid);
+          }
+        } else {
+          await registerAndSaveExpoPushToken(user.uid);
+        }
+      } catch (error) {
+        console.error('❌ Error setting up notifications:', error);
       }
-    } catch (error) {
-      console.error("Notification scheduling error:", error);
-    }
-  };
+    };
+    
+    setupNotifications();
+  }, [user]);
 
-  /* Firestore Listener */
+  /* ================================================================================
+     🔥 FIRESTORE LISTENER - WITH ERROR HANDLER
+     ================================================================================ */
+
   useEffect(() => {
     if (!user) {
-      setPlannerItems([]);
+      setTasks([]);
+      setLoading(false);
       return;
     }
 
-    const q = query(collection(db, "planner"), where("userId", "==", user.uid));
-    const unsub = onSnapshot(q, (snap) => {
-      const items = snap.docs.map(d => {
-        const data = d.data();
-        const dueDate = data.dueDate?.toDate?.() || new Date();
-        const notificationTime = data.notificationTime?.toDate?.();
-        return {
-          id: d.id,
-          ...data,
-          dueDate,
-          notificationTime,
-          enableNotifications: data.enableNotifications !== false,
-          syncToCalendar: data.syncToCalendar || false,
-          calendarEventId: data.calendarEventId,
-        };
-      });
+    const q = query(
+      collection(db, "planner"),
+      where("userId", "==", user.uid)
+    );
 
-      items.sort((a, b) => {
-        const orderA = a.order ?? 999;
-        const orderB = b.order ?? 999;
-        if (orderA !== orderB) return orderA - orderB;
-        return (a.dueDate?.getTime() || 0) - (b.dueDate?.getTime() || 0);
-      });
-
-      setPlannerItems(items);
-      AsyncStorage.setItem(`planner_cache_${user.uid}`, JSON.stringify(items));
-    }, (err) => console.error("Firestore error:", err));
-
-    return unsub;
-  }, [user]);
-
-  /* Schedule notifications safely */
-  useEffect(() => {
-    const scheduleAll = async () => {
-      for (const task of plannerItems) {
-        if (task.enableNotifications && !task.completed && task.dueDate && new Date(task.dueDate) > new Date()) {
-          await scheduleTaskNotificationSafe(task);
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (!isMounted.current) return;
+        
+        const taskList = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          dueDate: doc.data().dueDate?.toDate?.() || doc.data().dueDate || new Date(),
+          notificationTime: doc.data().notificationTime?.toDate?.() || doc.data().notificationTime,
+        }));
+        
+        setTasks(taskList);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("🔥 Planner listener error:", error);
+        if (!isMounted.current) return;
+        setLoading(false);
+        
+        if (error.code === "permission-denied") {
+          Alert.alert(
+            "Session Expired",
+            "Please sign out and sign back in to continue."
+          );
+        } else if (error.code === "unavailable") {
+          Alert.alert(
+            "Connection Error",
+            "Unable to connect to server. Please check your internet connection."
+          );
         }
       }
-    };
-    if (user) scheduleAll();
-  }, [plannerItems, user]);
+    );
 
-  /* Filtering & Search */
-  useEffect(() => {
-    let filtered = [...plannerItems];
+    return () => unsubscribe();
+  }, [user]);
 
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(item =>
-        item.title?.toLowerCase().includes(q) ||
-        item.description?.toLowerCase().includes(q)
-      );
-    }
+  /* ================================================================================
+     🎯 NOTIFICATION SCHEDULING - WITH VALIDATION
+     ================================================================================ */
 
-    if (filterCategory !== "all") filtered = filtered.filter(item => item.category === filterCategory);
-    if (filterDate) {
-      filtered = filtered.filter(item => {
-        const d = new Date(item.dueDate);
-        return d.getFullYear() === filterDate.getFullYear() &&
-               d.getMonth() === filterDate.getMonth() &&
-               d.getDate() === filterDate.getDate();
-      });
-    }
-
-    setFilteredPlannerItems(filtered);
-    setIsExpandedId(null);
-  }, [plannerItems, searchQuery, filterCategory, filterDate]);
-
-  /* Natural Date Parsing */
-  useEffect(() => {
-    const combined = form.title + " " + form.description;
-    if (combined === parsedDateRef.current || form.isEditing) return;
-    parsedDateRef.current = combined;
-
-    const parsed = parseNaturalDate(combined);
-    if (parsed) {
-      dispatch({ type: "SET", key: "dueDate", value: parsed });
-      dispatch({ type: "SET", key: "dueTime", value: parsed });
-      const notif = new Date(parsed.getTime() - 30 * 60000);
-      dispatch({ type: "SET", key: "notificationTime", value: notif });
-    }
-  }, [form.title, form.description, form.isEditing]);
-
-  const openPlannerModal = useCallback((item = null) => {
-    triggerHaptic("light");
-    setSelectionMode(false);
-    setSelectedIds([]);
-    if (item) dispatch({ type: "LOAD_ITEM", item });
-    else dispatch({ type: "RESET" });
-    setIsFormModalVisible(true);
-  }, []);
-
-  const handleSavePlannerItem = async () => {
-    if (!form.title.trim()) { showMessage("Please enter a task title."); return; }
-    if (!user) { showMessage("Please log in to save tasks."); return; }
-
-    setLoading(true);
-    triggerHaptic("heavy");
-
+  const scheduleNotification = useCallback(async (task) => {
     try {
-      const combined = new Date(
-        form.dueDate.getFullYear(),
-        form.dueDate.getMonth(),
-        form.dueDate.getDate(),
-        form.dueTime.getHours(),
-        form.dueTime.getMinutes()
-      );
-
-      const payload = {
-        title: form.title.trim(),
-        description: form.description.trim(),
-        dueDate: combined,
-        userId: user.uid,
-        completed: form.currentPlannerItem?.completed || false,
-        category: form.category,
-        priority: form.priority,
-        recurrence: form.recurrence,
-        subtasks: form.currentPlannerItem?.subtasks || [],
-        enableNotifications: form.enableNotifications,
-        notificationTime: form.enableNotifications ? form.notificationTime : null,
-        customNotificationMessage: form.customNotificationMessage.trim(),
-        syncToCalendar: form.syncToCalendar,
-      };
-
-      let savedTask;
-      if (form.isEditing && form.currentPlannerItem) {
-        await updateDoc(doc(db, "planner", form.currentPlannerItem.id), payload);
-        showMessage("Task updated");
-        savedTask = { id: form.currentPlannerItem.id, ...payload, dueDate: combined };
-        await scheduleTaskNotificationSafe(savedTask);
-        if (form.syncToCalendar) await addTaskToDeviceCalendar(savedTask, showMessage);
-      } else {
-        const maxOrder = plannerItems.reduce((max, item) => Math.max(max, item.order || 0), 0) + 1;
-        const docRef = await addDoc(collection(db, "planner"), {
-          ...payload,
-          order: maxOrder,
-          createdAt: serverTimestamp(),
-          notificationId: null,
-        });
-        showMessage("Task added");
-        savedTask = { id: docRef.id, ...payload, dueDate: combined };
-        setTimeout(() => scheduleTaskNotificationSafe(savedTask), 500);
-        if (form.syncToCalendar) setTimeout(() => addTaskToDeviceCalendar(savedTask, showMessage), 1000);
+      if (!task.enableNotifications || task.completed || !task.dueDate) {
+        return;
       }
-
-      setIsFormModalVisible(false);
-    } catch (err) {
-      console.error("Save error:", err);
-      showMessage("Save failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const confirmDelete = useCallback((item) => {
-    triggerHaptic("medium");
-    setItemToDelete(item);
-    setIsConfirmModalVisible(true);
-  }, []);
-
-  const handleDeletePlannerItem = async () => {
-    if (!itemToDelete?.id) return;
-    triggerHaptic("heavy");
-    try {
-      await cancelTaskNotification(itemToDelete.id);
-      await removeTaskFromDeviceCalendar(itemToDelete.id, itemToDelete.calendarEventId);
-      await deleteDoc(doc(db, "planner", itemToDelete.id));
-      showMessage("Task deleted");
       
-      setIsConfirmModalVisible(false);
-      setItemToDelete(null);
-    } catch (err) {
-      console.error("Delete error:", err);
-      showMessage("Delete failed");
-    }
-  };
-
-  const handleToggleCompleted = async (item) => {
-    try {
-      await updateDoc(doc(db, "planner", item.id), { completed: !item.completed });
-      if (!item.completed) {
-        await cancelTaskNotification(item.id);
-        if (item.calendarEventId) await removeTaskFromDeviceCalendar(item.id, item.calendarEventId);
-      } else {
-        if (item.enableNotifications) await scheduleTaskNotificationSafe(item);
-        if (item.syncToCalendar) await addTaskToDeviceCalendar(item, showMessage);
+      const dueDate = new Date(task.dueDate);
+      if (dueDate < new Date()) {
+        console.log('⏭️ Task due date is in the past');
+        return;
       }
-    } catch (err) {
-      console.error("Toggle error:", err);
+      
+      if (task.notificationId) {
+        await cancelTaskNotification(task.id);
+      }
+      
+      const notificationTime = task.notificationTime || new Date(dueDate.getTime() - 30 * 60000);
+      
+      if (notificationTime < new Date()) {
+        console.log('⏭️ Notification time is in the past');
+        await updateDoc(doc(db, "planner", task.id), { 
+          notificationId: null,
+          notificationTime: null 
+        }).catch(() => {});
+        return;
+      }
+
+      const notificationId = await scheduleTaskNotification({ 
+        ...task, 
+        notificationTime,
+        title: task.title,
+        body: task.customNotificationMessage || `Task "${task.title}" is due soon!`,
+        data: {
+          taskId: task.id,
+          screen: 'Planner',
+          type: 'task_reminder'
+        }
+      });
+      
+      if (notificationId) {
+        await updateDoc(doc(db, "planner", task.id), { 
+          notificationId, 
+          notificationTime,
+          notificationScheduledAt: serverTimestamp()
+        });
+        
+        const timeString = notificationTime.toLocaleTimeString([], { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+        const dateString = notificationTime.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        });
+        
+        Alert.alert(
+          '🔔 Reminder Set',
+          `You'll be notified on ${dateString} at ${timeString}`
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error scheduling notification:', error);
+      Alert.alert("Error", "Failed to schedule reminder. Please try again.");
     }
-  };
+  }, []);
 
-  const handleUpdateSubtask = async (taskId, subtaskIndex, completed, newTitle) => {
-    const item = plannerItems.find(i => i.id === taskId);
-    if (!item) return;
+  /* ================================================================================
+     🎯 TASK OPERATIONS - OPTIMIZED WITH useCallback
+     ================================================================================ */
 
-    let newSubtasks = [...(item.subtasks || [])];
-    if (newTitle) newSubtasks.push({ title: newTitle, completed: false });
-    else if (subtaskIndex !== null) newSubtasks[subtaskIndex].completed = completed;
-
+  const saveTask = useCallback(async (dueDateTime) => {
+    if (!isMounted.current) return;
+    setLoading(true);
+    
     try {
-      await updateDoc(doc(db, "planner", taskId), { subtasks: newSubtasks });
-    } catch (e) {
-      showMessage("Subtask update failed");
+      if (formState.isEditing && formState.id) {
+        // Update existing task
+        await updateDoc(doc(db, "planner", formState.id), {
+          title: formState.title.trim(),
+          description: formState.description.trim(),
+          dueDate: dueDateTime,
+          category: formState.category,
+          priority: formState.priority,
+          enableNotifications: formState.enableNotifications,
+          notificationTime: formState.enableNotifications ? formState.notificationTime : null,
+          customNotificationMessage: formState.customNotificationMessage.trim(),
+          // ✅ ADDED: Reset notification flags when task is updated
+          notificationSent: false,
+          notificationSentAt: null,
+          updatedAt: serverTimestamp(),
+        });
+        
+        if (formState.enableNotifications) {
+          await scheduleNotification({ 
+            ...formState, 
+            id: formState.id,
+            dueDate: dueDateTime,
+            notificationTime: formState.notificationTime 
+          });
+        } else {
+          await cancelTaskNotification(formState.id);
+          await updateDoc(doc(db, "planner", formState.id), { 
+            notificationId: null,
+            notificationSent: true, // Mark as sent to prevent cloud function from processing
+          });
+          Alert.alert("✅ Task updated", "Reminder disabled");
+        }
+        
+        Alert.alert("✅ Success", "Task updated successfully");
+      } else {
+        // Create new task
+        const docRef = await addDoc(collection(db, "planner"), {
+          title: formState.title.trim(),
+          description: formState.description.trim(),
+          dueDate: dueDateTime,
+          userId: user.uid,
+          completed: false,
+          category: formState.category,
+          priority: formState.priority,
+          enableNotifications: formState.enableNotifications,
+          notificationTime: formState.enableNotifications ? formState.notificationTime : null,
+          customNotificationMessage: formState.customNotificationMessage.trim(),
+          // ✅ ADDED: Notification flags for cloud function
+          notificationSent: false,
+          notificationSentAt: null,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        
+        if (formState.enableNotifications) {
+          await scheduleNotification({ 
+            ...formState, 
+            id: docRef.id,
+            dueDate: dueDateTime,
+            notificationTime: formState.notificationTime 
+          });
+        }
+        
+        Alert.alert("🎯 Success", "Task created successfully");
+      }
+      
+      setIsFormVisible(false);
+      formDispatch({ type: 'RESET' });
+    } catch (error) {
+      console.error("Save task error:", error);
+      Alert.alert("Error", "Failed to save task. Please try again.");
+    } finally {
+      if (isMounted.current) setLoading(false);
     }
-  };
+  }, [formState, user, scheduleNotification]);
 
-  const handleToggleExpand = (id) => setIsExpandedId(prev => prev === id ? null : id);
+  // ✅ FIXED: Past due date validation
+  const handleSaveTask = useCallback(async () => {
+    if (!formState.title.trim()) {
+      Alert.alert("Error", "Please enter a task title");
+      return;
+    }
+    if (!user) return;
 
-  const onLongPressSelect = (id) => {
+    const dueDateTime = new Date(
+      formState.dueDate.getFullYear(),
+      formState.dueDate.getMonth(),
+      formState.dueDate.getDate(),
+      formState.dueTime.getHours(),
+      formState.dueTime.getMinutes()
+    );
+
+    if (dueDateTime < new Date() && !formState.isEditing) {
+      Alert.alert(
+        "Past Due Date",
+        "This task's due date is in the past. No reminder will be sent. Continue?",
+        [
+          { text: "Go Back", style: "cancel" },
+          { text: "Save Anyway", onPress: () => saveTask(dueDateTime) }
+        ]
+      );
+      return;
+    }
+
+    saveTask(dueDateTime);
+  }, [formState, user, saveTask]);
+
+  // ✅ FIXED: Single atomic update for toggle complete
+  const handleToggleComplete = useCallback(async (task) => {
+    try {
+      const isCompleting = !task.completed;
+      
+      await updateDoc(doc(db, "planner", task.id), {
+        completed: isCompleting,
+        // ✅ ADDED: Mark notification as sent when completed
+        notificationSent: isCompleting ? true : task.notificationSent,
+        enableNotifications: isCompleting ? false : task.enableNotifications,
+        updatedAt: serverTimestamp(),
+        notificationId: isCompleting ? null : task.notificationId,
+      });
+      
+      if (isCompleting) {
+        await cancelTaskNotification(task.id);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      console.error("Toggle complete error:", error);
+      Alert.alert("Error", "Could not update task. Please check your connection and try again.");
+    }
+  }, []);
+
+  const handleDeleteTask = useCallback(async (task) => {
+    Alert.alert("Delete Task", `Delete "${task.title}"?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await cancelTaskNotification(task.id);
+            await deleteDoc(doc(db, "planner", task.id));
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            Alert.alert("🗑️ Deleted", "Task has been deleted");
+          } catch (error) {
+            console.error("Delete task error:", error);
+            Alert.alert("Error", "Failed to delete task. Please try again.");
+          }
+        },
+      },
+    ]);
+  }, []);
+
+  const handleEditTask = useCallback((task) => {
+    formDispatch({ type: 'LOAD_TASK', payload: task });
+    setIsFormVisible(true);
+  }, []);
+
+  const handleQuickAdd = useCallback(async ({ title, dueDate }) => {
+    if (!user) return;
+    
+    try {
+      const docRef = await addDoc(collection(db, "planner"), {
+        title,
+        description: "",
+        dueDate,
+        userId: user.uid,
+        completed: false,
+        category: "personal",
+        priority: "medium",
+        enableNotifications: true,
+        notificationTime: new Date(dueDate.getTime() - 30 * 60000),
+        // ✅ ADDED: Notification flags for cloud function
+        notificationSent: false,
+        notificationSentAt: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      
+      Alert.alert("✨ Success", "Task created! You can edit it to add details.");
+    } catch (error) {
+      console.error("Quick add error:", error);
+      Alert.alert("Error", "Failed to create task");
+    }
+  }, [user]);
+
+  const handleLongPressSelect = useCallback((id) => {
     if (!selectionMode) {
       setSelectionMode(true);
       setSelectedIds([id]);
-      triggerHaptic("medium");
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     } else {
-      setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+      setSelectedIds(prev => 
+        prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+      );
     }
-  };
+  }, [selectionMode]);
 
-  const batchComplete = async () => {
+  // ✅ FIXED: Batch complete with partial success handling
+  const handleBatchComplete = useCallback(async () => {
     if (selectedIds.length === 0) return;
-    setLoading(true);
+    
     try {
-      await Promise.all(selectedIds.map(id => updateDoc(doc(db, "planner", id), { completed: true })));
-      await Promise.all(selectedIds.map(id => cancelTaskNotification(id)));
-      showMessage("Tasks completed");
+      const results = await Promise.allSettled(
+        selectedIds.map(id => 
+          updateDoc(doc(db, "planner", id), { 
+            completed: true,
+            notificationId: null,
+            // ✅ ADDED: Mark notifications as sent
+            notificationSent: true,
+            enableNotifications: false,
+            updatedAt: serverTimestamp() 
+          })
+        )
+      );
+      
+      const succeeded = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      
+      await Promise.allSettled(selectedIds.map(id => cancelTaskNotification(id)));
+      
       setSelectionMode(false);
       setSelectedIds([]);
-    } catch (e) {
-      showMessage("Batch complete failed");
-    } finally {
-      setLoading(false);
+      
+      if (failed === 0) {
+        Alert.alert("✅ Success", `Completed ${succeeded} tasks`);
+      } else {
+        Alert.alert("⚠️ Partial Success", `Completed ${succeeded} tasks, ${failed} failed`);
+      }
+    } catch (error) {
+      console.error("Batch complete error:", error);
+      Alert.alert("Error", "Could not complete tasks. Please try again.");
     }
-  };
+  }, [selectedIds]);
 
-  const batchDelete = async () => {
+  // ✅ FIXED: Batch delete with partial success handling
+  const handleBatchDelete = useCallback(async () => {
     if (selectedIds.length === 0) return;
-    Alert.alert(`Delete ${selectedIds.length} tasks?`, "This cannot be undone.", [
+    
+    Alert.alert("Delete Tasks", `Delete ${selectedIds.length} tasks?`, [
       { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: async () => {
-        setLoading(true);
-        try {
-          await Promise.all(selectedIds.map(id => cancelTaskNotification(id)));
-          await Promise.all(selectedIds.map(id => deleteDoc(doc(db, "planner", id))));
-          showMessage("Tasks deleted");
-          setSelectionMode(false);
-          setSelectedIds([]);
-        } catch (e) {
-          showMessage("Batch delete failed");
-        } finally {
-          setLoading(false);
-        }
-      }},
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await Promise.allSettled(selectedIds.map(id => cancelTaskNotification(id)));
+            
+            const results = await Promise.allSettled(
+              selectedIds.map(id => deleteDoc(doc(db, "planner", id)))
+            );
+            
+            const succeeded = results.filter(r => r.status === 'fulfilled').length;
+            const failed = results.filter(r => r.status === 'rejected').length;
+            
+            setSelectionMode(false);
+            setSelectedIds([]);
+            
+            if (failed === 0) {
+              Alert.alert("🗑️ Deleted", `Deleted ${succeeded} tasks`);
+            } else {
+              Alert.alert("⚠️ Partial Success", `Deleted ${succeeded} tasks, ${failed} failed`);
+            }
+          } catch (error) {
+            console.error("Batch delete error:", error);
+            Alert.alert("Error", "Failed to delete tasks. Please try again.");
+          }
+        },
+      },
     ]);
-  };
+  }, [selectedIds]);
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery("");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
+
+  /* ================================================================================
+     📅 ADAPTIVE DATE/TIME PICKER HANDLERS
+     ================================================================================ */
+
+  const handleCustomNotificationPress = useCallback(() => {
+    setTempNotifDate(formState.notificationTime || new Date());
+    setNotifPickerMode('date');
+    setShowNotifPicker(true);
+  }, [formState.notificationTime]);
+
+  const handleNotifPickerChange = useCallback((event, selectedDate) => {
+    if (Platform.OS === 'android') {
+      if (event.type === 'dismissed' || !selectedDate) {
+        setShowNotifPicker(false);
+        return;
+      }
+    }
+
+    if (notifPickerMode === 'date') {
+      setTempNotifDate(selectedDate || tempNotifDate);
+      setNotifPickerMode('time');
+    } else {
+      const finalDate = selectedDate || tempNotifDate;
+      const currentDate = tempNotifDate;
+      
+      const combinedDateTime = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        finalDate.getHours(),
+        finalDate.getMinutes()
+      );
+      
+      formDispatch({ type: 'SET_NOTIFICATION_TIME', payload: combinedDateTime });
+      setShowNotifPicker(false);
+      setNotifPickerMode('date');
+      
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  }, [notifPickerMode, tempNotifDate]);
+
+  // FlatList render item
+  const renderTaskItem = useCallback(({ item }) => (
+    <TaskCard
+      task={item}
+      onToggle={handleToggleComplete}
+      onEdit={handleEditTask}
+      onDelete={handleDeleteTask}
+      onLongPress={handleLongPressSelect}
+      isSelected={selectedIds.includes(item.id)}
+      selectionMode={selectionMode}
+      viewMode={viewMode}
+    />
+  ), [handleToggleComplete, handleEditTask, handleDeleteTask, handleLongPressSelect, selectedIds, selectionMode, viewMode]);
+
+  /* ================================================================================
+     🎨 RENDER
+     ================================================================================ */
+
+  const headerHeight = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [Platform.OS === 'ios' ? 140 : 120, 100],
+    extrapolate: 'clamp',
+  });
+
+  const headerTitleSize = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [32, 24],
+    extrapolate: 'clamp',
+  });
 
   return (
-    <View style={styles.screen}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Planner</Text>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          {selectionMode ? (
-            <>
-              <TouchableOpacity onPress={() => { setSelectionMode(false); setSelectedIds([]); }} style={{ marginRight: 16 }}>
-                <Ionicons name="close" size={24} color={COLORS.textPrimary} />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={batchComplete} style={styles.headerAdd}>
-                <Ionicons name="checkmark-done-outline" size={20} color={COLORS.accentBlush} />
-                <Text style={styles.headerAddText}>Complete</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={batchDelete} style={[styles.headerAdd, { marginLeft: 12 }]}>
-                <Ionicons name="trash-outline" size={20} color={COLORS.danger} />
-                <Text style={styles.headerAddText}>Delete</Text>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <TouchableOpacity style={[styles.headerAdd, { marginLeft: 16 }]} onPress={() => openPlannerModal()}>
-              <Ionicons name="add" size={28} color={COLORS.accentBlush} />
-              <Text style={styles.headerAddText}>Add Task</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {/* Search */}
-      <View style={styles.searchRow}>
-        <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
-        <TextInput
-          placeholder="Search tasks..."
-          placeholderTextColor="#999"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          style={styles.searchInput}
+    <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundBase} />
+      
+      {/* Animated Header */}
+      <Animated.View style={[styles.header, { height: headerHeight }]}>
+        <LinearGradient
+          colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+          style={StyleSheet.absoluteFill}
         />
-      </View>
-
-      {/* Filters */}
-      <View style={styles.filters}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterButtons}>
-          <TouchableOpacity onPress={() => { setFilterCategory("all"); setFilterDate(null); }} style={[styles.filterBtn, filterCategory === "all" && !filterDate && styles.filterBtnActive]}>
-            <Text style={[styles.filterBtnText, filterCategory === "all" && !filterDate && styles.filterBtnTextActive]}>All</Text>
+        
+        <View style={styles.headerContent}>
+          <View style={styles.headerTop}>
+            <View>
+              <Animated.Text style={[styles.headerTitle, { fontSize: headerTitleSize }]}>
+                Planner
+              </Animated.Text>
+              <Text style={styles.headerSubtitle}>
+                {incompleteCount} active • {overdueCount} overdue
+              </Text>
+            </View>
+            
+            <View style={styles.headerRight}>
+              <View style={styles.viewModeToggle}>
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'list' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('list')}
+                >
+                  <Ionicons 
+                    name="list" 
+                    size={20} 
+                    color={viewMode === 'list' ? COLORS.accentBlush : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'grid' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('grid')}
+                >
+                  <Ionicons 
+                    name="grid" 
+                    size={20} 
+                    color={viewMode === 'grid' ? COLORS.accentBlush : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
+              </View>
+              
+              {selectionMode ? (
+                <View style={styles.selectionActions}>
+                  <TouchableOpacity onPress={handleBatchComplete} style={styles.selectionButton}>
+                    <Ionicons name="checkmark-done" size={22} color={COLORS.success} />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleBatchDelete} style={styles.selectionButton}>
+                    <Ionicons name="trash" size={22} color={COLORS.danger} />
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    onPress={() => { setSelectionMode(false); setSelectedIds([]); }} 
+                    style={styles.selectionButton}
+                  >
+                    <Ionicons name="close" size={22} color={COLORS.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity 
+                  style={styles.addButton}
+                  onPress={() => { formDispatch({ type: 'RESET' }); setIsFormVisible(true); }}
+                >
+                  <LinearGradient
+                    colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                    style={styles.addButtonGradient}
+                  >
+                    <Ionicons name="add" size={24} color="white" />
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+          
+          {/* Search Bar */}
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={18} color={COLORS.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search tasks..."
+              placeholderTextColor={COLORS.placeholder}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery ? (
+              <TouchableOpacity onPress={clearSearch}>
+                <Ionicons name="close-circle" size={18} color={COLORS.textTertiary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </Animated.View>
+      
+      {/* Category Filters & Completed Toggle */}
+      <View style={styles.filterBar}>
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          style={styles.categoryScroll}
+          contentContainerStyle={styles.categoryContainer}
+        >
+          <TouchableOpacity
+            style={[styles.categoryChip, selectedCategory === 'all' && styles.categoryChipActive]}
+            onPress={() => {
+              setSelectedCategory('all');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Text style={[styles.categoryText, selectedCategory === 'all' && styles.categoryTextActive]}>
+              All
+            </Text>
           </TouchableOpacity>
-          {categories.map(c => (
-            <TouchableOpacity key={c.key} onPress={() => { setFilterCategory(c.key); setFilterDate(null); }} style={[styles.filterBtn, filterCategory === c.key && styles.filterBtnActive]}>
-              <View style={[styles.smallDot, { backgroundColor: CATEGORY_COLORS[c.key] }]} />
-              <Text style={[styles.filterBtnText, filterCategory === c.key && styles.filterBtnTextActive]}>{c.label}</Text>
+          
+          {Object.entries(CATEGORIES).map(([key, cat]) => (
+            <TouchableOpacity
+              key={key}
+              style={[
+                styles.categoryChip,
+                { backgroundColor: selectedCategory === key ? cat.color : COLORS.card },
+                selectedCategory === key && styles.categoryChipActive,
+              ]}
+              onPress={() => {
+                setSelectedCategory(key);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+            >
+              <Ionicons 
+                name={cat.icon} 
+                size={16} 
+                color={selectedCategory === key ? 'white' : cat.color} 
+              />
+              <Text style={[
+                styles.categoryText,
+                { color: selectedCategory === key ? 'white' : cat.color }
+              ]}>
+                {cat.label}
+              </Text>
             </TouchableOpacity>
           ))}
-          <TouchableOpacity onPress={() => { setCalendarVisible(p => !p); setFilterCategory("all"); }} style={[styles.filterBtn, calendarVisible && styles.filterBtnActive]}>
-            <Ionicons name="calendar-outline" size={14} color={calendarVisible ? "#fff" : COLORS.textPrimary} />
-            <Text style={[styles.filterBtnText, calendarVisible && styles.filterBtnTextActive, { marginLeft: 6 }]}>
-              {calendarVisible ? "Close Calendar" : (filterDate ? filterDate.toLocaleDateString() : "By Date")}
-            </Text>
-            {filterDate && !calendarVisible && (
-              <TouchableOpacity onPress={() => setFilterDate(null)} style={{ marginLeft: 8 }}>
-                <Ionicons name="close-circle" size={14} color="#fff" />
-              </TouchableOpacity>
-            )}
-          </TouchableOpacity>
         </ScrollView>
+        
+        <TouchableOpacity
+          style={styles.completedToggle}
+          onPress={() => setShowCompleted(!showCompleted)}
+        >
+          <Ionicons 
+            name={showCompleted ? "eye-outline" : "eye-off-outline"} 
+            size={20} 
+            color={showCompleted ? COLORS.sage : COLORS.textSecondary} 
+          />
+          <Text style={[styles.completedToggleText, showCompleted && { color: COLORS.sage }]}>
+            {showCompleted ? "All" : "Active"}
+          </Text>
+          <Text style={styles.completedCount}>({completedCount})</Text>
+        </TouchableOpacity>
       </View>
-
-      {/* Calendar */}
-      {calendarVisible && (
-        <View style={{ marginHorizontal: 20, marginBottom: 12 }}>
-          <CalendarGrid tasks={plannerItems} onDateSelect={date => { setFilterDate(date); setCalendarVisible(false); triggerHaptic("light"); }} selectedDate={filterDate} />
-        </View>
-      )}
-
+      
       {/* Task List */}
-      <ScrollView contentContainerStyle={styles.listContainer}>
-        {filteredPlannerItems.length === 0 ? (
-          <AnimatedEmptyState />
-        ) : (
-          filteredPlannerItems.map((item, index) => (
-            <TaskItem
-              key={item.id}
-              item={item}
-              handleToggleCompleted={handleToggleCompleted}
-              handleToggleExpand={handleToggleExpand}
-              handleUpdateSubtask={handleUpdateSubtask}
-              isExpanded={item.id === isExpandedId}
-              onLongPressSelect={onLongPressSelect}
-              selectionMode={selectionMode}
-              selected={selectedIds.includes(item.id)}
-              confirmDelete={confirmDelete}
-              openPlannerModal={openPlannerModal}
-            />
-          ))
-        )}
-      </ScrollView>
-
-      {/* Form Modal */}
-      <Modal visible={isFormModalVisible} transparent animationType="slide" onRequestClose={() => setIsFormModalVisible(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={COLORS.accentBlush} />
+          <Text style={styles.loadingText}>Loading tasks...</Text>
+        </View>
+      ) : filteredTasksList.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Ionicons name="checkbox-outline" size={64} color={COLORS.textTertiary} />
+          <Text style={styles.emptyTitle}>
+            {searchQuery ? "No tasks found" : "No tasks yet"}
+          </Text>
+          <Text style={styles.emptyText}>
+            {searchQuery 
+              ? "Try a different search term" 
+              : showCompleted 
+                ? "No completed tasks"
+                : "Create your first task to get started"}
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyButton}
+            onPress={() => { formDispatch({ type: 'RESET' }); setIsFormVisible(true); }}
+          >
+            <LinearGradient
+              colors={[COLORS.accentBlush, COLORS.accentWarm]}
+              style={styles.emptyButtonGradient}
+            >
+              <Ionicons name="add" size={20} color="white" />
+              <Text style={styles.emptyButtonText}>Create Task</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <FlatList
+          ref={flatListRef}
+          data={filteredTasksList}
+          renderItem={renderTaskItem}
+          keyExtractor={(item) => item.id}
+          numColumns={viewMode === 'grid' ? 2 : 1}
+          key={viewMode}
+          contentContainerStyle={styles.taskListContent}
+          showsVerticalScrollIndicator={false}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: false }
+          )}
+          scrollEventThrottle={16}
+          ListFooterComponent={<View style={{ height: 100 }} />}
+        />
+      )}
+      
+      {/* Quick Add Bar */}
+      {!selectionMode && !loading && filteredTasksList.length > 0 && (
+        <QuickAddBar onAdd={handleQuickAdd} />
+      )}
+      
+      {/* ================================================================================
+         📝 TASK FORM MODAL - With KeyboardAvoidingView and character limits
+         ================================================================================ */}
+      
+      <Modal
+        visible={isFormVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setIsFormVisible(false)}
+      >
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+          
+          <View style={styles.modalContainer}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{form.isEditing ? "Edit Task" : "New Task"}</Text>
-              <TouchableOpacity onPress={() => setIsFormModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#666" />
+              <Text style={styles.modalTitle}>
+                {formState.isEditing ? "Edit Task" : "New Task"}
+              </Text>
+              <TouchableOpacity
+                onPress={() => { setIsFormVisible(false); formDispatch({ type: 'RESET' }); }}
+                style={styles.modalClose}
+              >
+                <Ionicons name="close" size={24} color={COLORS.textPrimary} />
               </TouchableOpacity>
             </View>
-
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.inputLabel}>Title</Text>
-              <TextInput value={form.title} onChangeText={t => dispatch({ type: "SET", key: "title", value: t })} style={styles.input} placeholder="Task title" />
-
-              <Text style={styles.inputLabel}>Description</Text>
-              <TextInput value={form.description} onChangeText={t => dispatch({ type: "SET", key: "description", value: t })} style={[styles.input, { height: 90 }]} placeholder="Details (optional)" multiline />
-
-              <Text style={styles.inputLabel}>Priority</Text>
-              <View style={styles.categoryRow}>
-                {priorities.map(p => (
-                  <TouchableOpacity key={p.key} style={[styles.catBtn, form.priority === p.key && { backgroundColor: PRIORITY_COLORS[p.key] }]} onPress={() => dispatch({ type: "SET", key: "priority", value: p.key })}>
-                    <Text style={[styles.catText, form.priority === p.key && { color: "#fff" }]}>{p.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.inputLabel}>Due Date & Time</Text>
-              <View style={styles.dateTimeRow}>
-                <TouchableOpacity onPress={() => setShowDatePicker(true)} style={[styles.input, styles.dateTimeButton]}>
-                  <Ionicons name="calendar-outline" size={18} color={COLORS.sage} />
-                  <Text style={styles.dateTimeText}>{form.dueDate.toLocaleDateString()}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setShowTimePicker(true)} style={[styles.input, styles.dateTimeButton]}>
-                  <Ionicons name="time-outline" size={18} color={COLORS.sage} />
-                  <Text style={styles.dateTimeText}>{form.dueTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</Text>
-                </TouchableOpacity>
-              </View>
-
-              {showDatePicker && (
-                <DateTimePicker value={form.dueDate} mode="date" onChange={(e, d) => { setShowDatePicker(false); if (d) dispatch({ type: "SET", key: "dueDate", value: d }); }} />
-              )}
-              {showTimePicker && (
-                <DateTimePicker value={form.dueTime} mode="time" onChange={(e, d) => { setShowTimePicker(false); if (d) dispatch({ type: "SET", key: "dueTime", value: d }); }} />
-              )}
-
-              <Text style={styles.inputLabel}>Category</Text>
-              <View style={styles.categoryRow}>
-                {categories.map(c => (
-                  <TouchableOpacity key={c.key} style={[styles.catBtn, form.category === c.key && { backgroundColor: CATEGORY_COLORS[c.key] }]} onPress={() => dispatch({ type: "SET", key: "category", value: c.key })}>
-                    <Text style={[styles.catText, form.category === c.key && { color: "#fff" }]}>{c.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.inputLabel}>Recurrence</Text>
-              <View style={styles.categoryRow}>
-                {["none", "daily", "weekly", "monthly"].map(r => (
-                  <TouchableOpacity key={r} style={[styles.catBtnSmall, form.recurrence === r && { backgroundColor: COLORS.accentBlush }]} onPress={() => dispatch({ type: "SET", key: "recurrence", value: r })}>
-                    <Text style={[styles.catTextSmall, form.recurrence === r && { color: "#fff" }]}>{r.charAt(0).toUpperCase() + r.slice(1)}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {/* Notifications */}
-              <View style={styles.notificationSection}>
-                <View style={styles.notificationHeader}>
-                  <Ionicons name="notifications-outline" size={18} color={COLORS.sage} />
-                  <Text style={[styles.inputLabel, { marginLeft: 8 }]}>Notifications</Text>
-                  <Switch
-                    value={form.enableNotifications}
-                    onValueChange={v => dispatch({ type: "SET", key: "enableNotifications", value: v })}
-                    trackColor={{ false: "#ccc", true: COLORS.sage }}
+            
+            <ScrollView 
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              {/* Title - WITH MAX LENGTH & COUNTER */}
+              <View style={styles.formSection}>
+                <View style={styles.formLabelRow}>
+                  <Text style={styles.formLabel}>Title <Text style={styles.requiredStar}>*</Text></Text>
+                  <Text style={[
+                    styles.characterCount,
+                    formState.title.length >= 200 && { color: COLORS.danger }
+                  ]}>
+                    {formState.title.length}/200
+                  </Text>
+                </View>
+                <View style={styles.formInputContainer}>
+                  <Ionicons name="create-outline" size={20} color={COLORS.sage} />
+                  <TextInput
+                    style={styles.formInput}
+                    placeholder="What needs to be done?"
+                    placeholderTextColor={COLORS.placeholder}
+                    value={formState.title}
+                    onChangeText={(text) => formDispatch({ type: 'SET_FIELD', field: 'title', value: text })}
+                    maxLength={200}
+                    returnKeyType="done"
                   />
                 </View>
-
-                {form.enableNotifications && (
+              </View>
+              
+              {/* Description - WITH MAX LENGTH & COUNTER */}
+              <View style={styles.formSection}>
+                <View style={styles.formLabelRow}>
+                  <Text style={styles.formLabel}>Description</Text>
+                  <Text style={styles.characterCount}>
+                    {formState.description.length}/1000
+                  </Text>
+                </View>
+                <View style={[styles.formInputContainer, styles.formTextArea]}>
+                  <Ionicons name="document-text-outline" size={20} color={COLORS.sage} />
+                  <TextInput
+                    style={[styles.formInput, styles.formTextAreaInput]}
+                    placeholder="Add details..."
+                    placeholderTextColor={COLORS.placeholder}
+                    value={formState.description}
+                    onChangeText={(text) => formDispatch({ type: 'SET_FIELD', field: 'description', value: text })}
+                    multiline
+                    maxLength={1000}
+                  />
+                </View>
+              </View>
+              
+              {/* Due Date & Time */}
+              <View style={styles.formSection}>
+                <Text style={styles.formLabel}>Due Date & Time</Text>
+                <View style={styles.formDateTimeRow}>
+                  <TouchableOpacity
+                    style={styles.formDateTimeButton}
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Ionicons name="calendar-outline" size={20} color={COLORS.sage} />
+                    <Text style={styles.formDateTimeText}>
+                      {formState.dueDate.toLocaleDateString('en-US', { 
+                        month: 'short', 
+                        day: 'numeric' 
+                      })}
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={styles.formDateTimeButton}
+                    onPress={() => setShowTimePicker(true)}
+                  >
+                    <Ionicons name="time-outline" size={20} color={COLORS.sage} />
+                    <Text style={styles.formDateTimeText}>
+                      {formState.dueTime.toLocaleTimeString([], { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                      })}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              
+              {/* Date Picker */}
+              {showDatePicker && (
+                <DateTimePicker
+                  value={formState.dueDate}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  minimumDate={new Date()}
+                  onChange={(event, date) => {
+                    setShowDatePicker(false);
+                    if (date) {
+                      formDispatch({ type: 'SET_DUE_DATE', payload: date });
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }
+                  }}
+                />
+              )}
+              
+              {/* Time Picker */}
+              {showTimePicker && (
+                <DateTimePicker
+                  value={formState.dueTime}
+                  mode="time"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(event, time) => {
+                    setShowTimePicker(false);
+                    if (time) {
+                      formDispatch({ type: 'SET_DUE_TIME', payload: time });
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }
+                  }}
+                />
+              )}
+              
+              {/* Category */}
+              <View style={styles.formSection}>
+                <Text style={styles.formLabel}>Category</Text>
+                <View style={styles.formChipGroup}>
+                  {Object.entries(CATEGORIES).map(([key, cat]) => (
+                    <TouchableOpacity
+                      key={key}
+                      style={[
+                        styles.formChip,
+                        { backgroundColor: cat.lightColor },
+                        formState.category === key && { 
+                          backgroundColor: cat.color,
+                          borderWidth: 0,
+                        },
+                      ]}
+                      onPress={() => 
+                        formDispatch({ type: 'SET_FIELD', field: 'category', value: key })
+                      }
+                    >
+                      <Ionicons
+                        name={cat.icon}
+                        size={16}
+                        color={formState.category === key ? 'white' : cat.color}
+                      />
+                      <Text
+                        style={[
+                          styles.formChipText,
+                          { color: formState.category === key ? 'white' : cat.color },
+                        ]}
+                      >
+                        {cat.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              
+              {/* Priority */}
+              <View style={styles.formSection}>
+                <Text style={styles.formLabel}>Priority</Text>
+                <View style={styles.formChipGroup}>
+                  {Object.entries(PRIORITIES).map(([key, pri]) => (
+                    <TouchableOpacity
+                      key={key}
+                      style={[
+                        styles.formChip,
+                        { backgroundColor: pri.lightColor },
+                        formState.priority === key && { 
+                          backgroundColor: pri.color,
+                          borderWidth: 0,
+                        },
+                      ]}
+                      onPress={() => 
+                        formDispatch({ type: 'SET_FIELD', field: 'priority', value: key })
+                      }
+                    >
+                      <Ionicons
+                        name={pri.icon}
+                        size={16}
+                        color={formState.priority === key ? 'white' : pri.color}
+                      />
+                      <Text
+                        style={[
+                          styles.formChipText,
+                          { color: formState.priority === key ? 'white' : pri.color },
+                        ]}
+                      >
+                        {pri.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              
+              {/* Notifications */}
+              <View style={styles.formSection}>
+                <View style={styles.formSwitchRow}>
+                  <View style={styles.formSwitchLabel}>
+                    <Ionicons name="notifications-outline" size={20} color={COLORS.sage} />
+                    <Text style={[styles.formLabel, { marginBottom: 0, marginLeft: 8 }]}>
+                      Reminder
+                    </Text>
+                  </View>
+                  <Switch
+                    value={formState.enableNotifications}
+                    onValueChange={(value) => {
+                      formDispatch({ type: 'SET_FIELD', field: 'enableNotifications', value });
+                      if (value && !formState.notificationTime) {
+                        formDispatch({ 
+                          type: 'SET_NOTIFICATION_TIME', 
+                          payload: new Date(formState.dueDate.getTime() - 30 * 60000)
+                        });
+                      }
+                    }}
+                    trackColor={{ false: '#E0E0E0', true: COLORS.sage + '80' }}
+                    thumbColor={formState.enableNotifications ? COLORS.sage : '#f4f3f4'}
+                  />
+                </View>
+                
+                {formState.enableNotifications && (
                   <>
-                    <Text style={[styles.inputLabel, { marginTop: 12 }]}>Remind me</Text>
-                    <View style={styles.notificationTimeGrid}>
-                      {notificationTimes.map(opt => {
-                        const active = opt.minutes === null || 
-                          form.notificationTime.getTime() === new Date(form.dueDate.getTime() + opt.minutes * 60000).getTime();
+                    <Text style={[styles.formLabel, { marginTop: 16 }]}>Remind me</Text>
+                    <View style={styles.formNotifPresets}>
+                      {NOTIFICATION_PRESETS.map((preset) => {
+                        const dueTime = formState.dueDate.getTime();
+                        const isActive = preset.minutes === null
+                          ? formState.notificationTime && 
+                            !NOTIFICATION_PRESETS
+                              .filter(p => p.minutes !== null)
+                              .some(p => dueTime + p.minutes * 60000 === formState.notificationTime?.getTime())
+                          : formState.notificationTime?.getTime() === dueTime + preset.minutes * 60000;
+                        
                         return (
                           <TouchableOpacity
-                            key={opt.label}
-                            style={[styles.notificationTimeBtn, active && styles.notificationTimeBtnActive]}
+                            key={preset.label}
+                            style={[styles.formNotifPreset, isActive && styles.formNotifPresetActive]}
                             onPress={() => {
-                              if (opt.minutes === null) {
-                                setShowNotificationTimePicker(true);
+                              if (preset.minutes === null) {
+                                handleCustomNotificationPress();
                               } else {
-                                dispatch({ type: "SET", key: "notificationTime", value: new Date(form.dueDate.getTime() + opt.minutes * 60000) });
+                                formDispatch({ 
+                                  type: 'SET_NOTIFICATION_TIME', 
+                                  payload: new Date(dueTime + preset.minutes * 60000)
+                                });
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               }
                             }}
                           >
-                            <Text style={[styles.notificationTimeText, active && styles.notificationTimeTextActive]}>{opt.label}</Text>
+                            <Text style={[
+                              styles.formNotifPresetText,
+                              isActive && styles.formNotifPresetTextActive
+                            ]}>
+                              {preset.label}
+                            </Text>
                           </TouchableOpacity>
                         );
                       })}
                     </View>
-
-                    {showNotificationTimePicker && (
+                    
+                    {/* Custom Notification Picker */}
+                    {showNotifPicker && (
                       <DateTimePicker
-                        value={form.notificationTime}
-                        mode="datetime"
-                        onChange={(e, d) => {
-                          setShowNotificationTimePicker(false);
-                          if (d) dispatch({ type: "SET", key: "notificationTime", value: d });
-                        }}
+                        value={tempNotifDate}
+                        mode={notifPickerMode}
+                        display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                        minimumDate={new Date()}
+                        maximumDate={formState.dueDate}
+                        onChange={handleNotifPickerChange}
                       />
                     )}
-
-                    <Text style={[styles.inputLabel, { marginTop: 12 }]}>Custom Message (optional)</Text>
-                    <TextInput
-                      value={form.customNotificationMessage}
-                      onChangeText={t => dispatch({ type: "SET", key: "customNotificationMessage", value: t })}
-                      style={[styles.input, { height: 60 }]}
-                      placeholder="Custom message..."
-                      multiline
-                    />
-
-                    <Text style={styles.notificationHint}>
-                      Notified at: {form.notificationTime.toLocaleString()}
-                    </Text>
+                    
+                    {/* Display selected notification time */}
+                    {formState.notificationTime && (
+                      <View style={styles.formNotifTimeDisplay}>
+                        <Ionicons name="time" size={16} color={COLORS.sage} />
+                        <Text style={styles.formNotifTimeText}>
+                          {formState.notificationTime.toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric' 
+                          })} at {formState.notificationTime.toLocaleTimeString([], { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                          })}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={handleCustomNotificationPress}
+                          style={{ padding: 4 }}
+                        >
+                          <Ionicons name="create-outline" size={16} color={COLORS.sage} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    
+                    {/* Custom Message */}
+                    <View style={{ marginTop: 16 }}>
+                      <Text style={styles.formLabel}>Custom Message</Text>
+                      <View style={styles.formInputContainer}>
+                        <Ionicons name="chatbubble-outline" size={20} color={COLORS.sage} />
+                        <TextInput
+                          style={styles.formInput}
+                          placeholder="Add a personal reminder message..."
+                          placeholderTextColor={COLORS.placeholder}
+                          value={formState.customNotificationMessage}
+                          onChangeText={(text) => 
+                            formDispatch({ 
+                              type: 'SET_FIELD', 
+                              field: 'customNotificationMessage', 
+                              value: text 
+                            })
+                          }
+                          maxLength={200}
+                        />
+                      </View>
+                    </View>
                   </>
                 )}
               </View>
-
-              {/* Calendar Sync */}
-              <View style={styles.notificationSection}>
-                <View style={styles.notificationHeader}>
-                  <Ionicons name="calendar-outline" size={18} color={COLORS.sage} />
-                  <Text style={[styles.inputLabel, { marginLeft: 8 }]}>Sync to Device Calendar</Text>
-                  <Switch
-                    value={form.syncToCalendar}
-                    onValueChange={v => dispatch({ type: "SET", key: "syncToCalendar", value: v })}
-                    trackColor={{ false: "#ccc", true: COLORS.sage }}
-                  />
-                </View>
-                {form.syncToCalendar && (
-                  <Text style={styles.notificationHint}>
-                    Task will appear in your phone's calendar (syncs with Google/Apple)
-                  </Text>
-                )}
-              </View>
             </ScrollView>
-
-            <TouchableOpacity style={styles.saveBtn} onPress={handleSavePlannerItem} disabled={loading}>
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>{form.isEditing ? "Update" : "Save"} Task</Text>}
+            
+            {/* Save Button */}
+            <TouchableOpacity
+              style={styles.formSaveButton}
+              onPress={handleSaveTask}
+              disabled={loading}
+            >
+              <LinearGradient
+                colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                style={styles.formSaveGradient}
+              >
+                {loading ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <>
+                    <Ionicons 
+                      name={formState.isEditing ? "checkmark-done" : "checkbox"} 
+                      size={20} 
+                      color="white" 
+                    />
+                    <Text style={styles.formSaveText}>
+                      {formState.isEditing ? "Update Task" : "Create Task"}
+                    </Text>
+                  </>
+                )}
+              </LinearGradient>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
-
-      {/* Delete Confirmation */}
-      <Modal visible={isConfirmModalVisible} transparent animationType="fade">
-        <View style={styles.confirmModalOverlay}>
-          <View style={styles.confirmModalContainer}>
-            <Ionicons name="warning" size={48} color={COLORS.danger} />
-            <Text style={styles.confirmModalTitle}>Delete Task?</Text>
-            <Text style={styles.confirmModalText}>
-              Permanently delete <Text style={{ fontWeight: "bold" }}>{itemToDelete?.title || "this task"}</Text>?
-            </Text>
-            <View style={styles.confirmModalButtons}>
-              <TouchableOpacity style={[styles.confirmButton, styles.cancelConfirmButton]} onPress={() => { setIsConfirmModalVisible(false); setItemToDelete(null); }}>
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.confirmButton, styles.deleteConfirmButton]} onPress={handleDeletePlannerItem}>
-                <Text style={styles.confirmButtonText}>Delete</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Transient Message */}
-      <Modal visible={showModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.messageBox}>
-            <Text style={{ color: COLORS.textPrimary, fontWeight: "600" }}>{modalMessage}</Text>
-          </View>
-        </View>
-      </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
-/* Styles */
+/* ================================================================================
+   🎨 STYLES
+   ================================================================================ */
+
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: COLORS.backgroundBase },
-  header: { paddingTop: Platform.OS === 'ios' ? 50 : 18, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: COLORS.backgroundBase },
-  headerTitle: { fontSize: 24, fontWeight: "900", color: COLORS.textPrimary },
-  headerAdd: { flexDirection: "row", alignItems: "center", backgroundColor: COLORS.card, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 24, shadowColor: COLORS.nudeShadow, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.7, shadowRadius: 14, elevation: 6 },
-  headerAddText: { color: COLORS.accentBlush, fontWeight: "700", marginLeft: 8 },
-  headerIconBtn: { padding: 10, borderRadius: 20, backgroundColor: COLORS.card, shadowColor: COLORS.nudeShadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 8, elevation: 3 },
-
-  searchRow: { marginHorizontal: 20, marginBottom: 12, backgroundColor: COLORS.card, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, flexDirection: "row", alignItems: "center", shadowColor: COLORS.nudeShadow, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.6, shadowRadius: 12, elevation: 4 },
-  searchInput: { flex: 1, fontSize: 15, color: COLORS.textPrimary },
-
-  filters: { paddingHorizontal: 20, marginBottom: 8 },
-  filterButtons: { flexDirection: "row", alignItems: "center" },
-  filterBtn: { flexDirection: "row", alignItems: "center", backgroundColor: COLORS.card, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, marginRight: 10, borderWidth: 1, borderColor: "#eee" },
-  filterBtnActive: { backgroundColor: COLORS.accentBlush, borderColor: COLORS.accentBlush },
-  filterBtnText: { marginLeft: 6, color: COLORS.textPrimary, fontWeight: "600", fontSize: 13 },
-  filterBtnTextActive: { color: "#fff" },
-  smallDot: { width: 8, height: 8, borderRadius: 4 },
-
-  listContainer: { paddingHorizontal: 20, paddingBottom: 40 },
-  emptyContainer: { justifyContent: "center", alignItems: "center", padding: 30, marginTop: 60 },
-  empty: { textAlign: "center", color: COLORS.textSecondary, marginTop: 15, fontSize: 16, fontWeight: "500" },
-
-  taskCard: { backgroundColor: COLORS.card, borderRadius: 14, overflow: "hidden", shadowColor: COLORS.nudeShadow, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.6, shadowRadius: 14, elevation: 4, borderWidth: 0.5, borderColor: "#eee" },
-  taskCardPressable: { padding: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
-  taskRow: { flexDirection: "row", alignItems: "flex-start", flex: 1 },
-  checkbox: { paddingRight: 10, paddingTop: 2 },
-  taskBody: { flex: 1 },
-  titleRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
-  categoryDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
-  taskTitle: { fontSize: 16, fontWeight: "700", color: COLORS.textPrimary, flexShrink: 1 },
-  completed: { textDecorationLine: "line-through", color: "#999" },
-  metaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
-  priorityBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, marginRight: 8 },
-  priorityText: { color: "#fff", fontSize: 11, fontWeight: "700" },
-  metaText: { color: "#777", fontSize: 12 },
-  cardActions: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", paddingHorizontal: 16, marginTop: 8 },
-  iconBtn: { padding: 8, marginLeft: 12 },
-
-  expandedContent: { paddingHorizontal: 16, paddingBottom: 16, borderTopWidth: 1, borderTopColor: "#eee" },
-  taskDescFull: { color: COLORS.textPrimary, fontSize: 14, marginVertical: 8 },
-  subtaskHeader: { fontSize: 13, fontWeight: "700", color: COLORS.textSecondary, marginBottom: 6 },
-  subtaskList: { maxHeight: 150 },
-  subtaskRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
-  subtaskCheckbox: { flexDirection: "row", alignItems: "center" },
-  subtaskText: { marginLeft: 8, fontSize: 14, color: COLORS.textPrimary },
-  subtaskCompleted: { textDecorationLine: "line-through", color: "#999" },
-  subtaskInput: { marginTop: 10, paddingVertical: 8, fontSize: 14, color: COLORS.textPrimary, borderBottomWidth: 1, borderBottomColor: COLORS.accentBlush + "55" },
-
-  leftAction: { justifyContent: "center", alignItems: "flex-end", paddingLeft: 20 },
-  rightAction: { justifyContent: "center", alignItems: "flex-end", paddingRight: 20 },
-  swipeAction: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingHorizontal: 20, borderRadius: 14 },
-  actionText: { color: "white", fontWeight: "700", fontSize: 16, marginLeft: 8 },
-
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center" },
-  modalCard: { width: "92%", maxHeight: "90%", backgroundColor: COLORS.layer, borderRadius: 16, padding: 20, shadowColor: COLORS.nudeShadow, shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.7, shadowRadius: 20, elevation: 10 },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  modalTitle: { fontSize: 20, fontWeight: "800", color: COLORS.textPrimary },
-
-  inputLabel: { fontSize: 13, fontWeight: "700", color: COLORS.textSecondary, marginTop: 16, marginBottom: 6 },
-  input: { backgroundColor: COLORS.card, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: "#eee", marginBottom: 8, color: COLORS.textPrimary },
-  dateTimeRow: { flexDirection: "row", justifyContent: "space-between" },
-  dateTimeButton: { flex: 1, marginHorizontal: 6, flexDirection: "row", alignItems: "center", justifyContent: "center" },
-  dateTimeText: { marginLeft: 8, fontSize: 15, fontWeight: "700", color: COLORS.textPrimary },
-
-  categoryRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 8 },
-  catBtn: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12, backgroundColor: COLORS.card, marginRight: 10, marginBottom: 8, borderWidth: 1, borderColor: "#eee" },
-  catText: { color: COLORS.textPrimary, fontWeight: "700" },
-  catBtnSmall: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: COLORS.card, marginRight: 8, marginTop: 5, borderWidth: 1, borderColor: "#eee" },
-  catTextSmall: { color: COLORS.textPrimary, fontWeight: "700", fontSize: 13 },
-
-  saveBtn: { marginTop: 20, backgroundColor: COLORS.accentBlush, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
-  saveBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
-
-  messageBox: { backgroundColor: COLORS.card, paddingHorizontal: 20, paddingVertical: 14, borderRadius: 12, shadowColor: COLORS.nudeShadow, shadowOpacity: 0.8, shadowRadius: 12, elevation: 8 },
-
-  notificationSection: { marginTop: 20, padding: 16, backgroundColor: COLORS.card, borderRadius: 12, borderWidth: 1, borderColor: COLORS.sage + "22" },
-  notificationHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  notificationTimeGrid: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 12 },
-  notificationTimeBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.backgroundBase, marginRight: 8, marginBottom: 8, borderWidth: 1, borderColor: '#eee' },
-  notificationTimeBtnActive: { backgroundColor: COLORS.sage, borderColor: COLORS.sage },
-  notificationTimeText: { color: COLORS.textPrimary, fontSize: 12, fontWeight: '600' },
-  notificationTimeTextActive: { color: '#fff' },
-  notificationHint: { fontSize: 12, color: COLORS.textSecondary, fontStyle: 'italic', marginTop: 8, textAlign: 'center' },
-
-  // Calendar and Confirmation Modal styles
-  calendarContainer: { backgroundColor: COLORS.card, borderRadius: 14, padding: 12, shadowColor: COLORS.nudeShadow, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.6, shadowRadius: 12, elevation: 4 },
-  monthSelector: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  monthTitle: { fontSize: 16, fontWeight: "700", color: COLORS.textPrimary },
-  dayNamesRow: { flexDirection: "row", justifyContent: "space-between", paddingBottom: 5, borderBottomWidth: 1, borderBottomColor: "#eee" },
-  dayName: { width: (width - 40 - 24) / 7, textAlign: "center", color: COLORS.textSecondary, fontWeight: "600", fontSize: 12 },
-  dayGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 5 },
-  dayCell: { width: (width - 40 - 24) / 7, height: 40, justifyContent: "center", alignItems: "center", marginVertical: 1, borderRadius: 8, position: "relative" },
-  dayCellToday: { borderWidth: 1, borderColor: COLORS.accentWarm },
-  dayCellSelected: { backgroundColor: COLORS.accentBlush },
-  dayText: { color: COLORS.textPrimary, fontSize: 14 },
-  dayTextSelected: { color: "#fff" },
-  taskDot: { position: "absolute", bottom: 5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: COLORS.sage },
-
-  confirmModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  confirmModalContainer: { width: '85%', backgroundColor: COLORS.card, borderRadius: 18, padding: 25, alignItems: 'center', shadowColor: COLORS.nudeShadow, shadowOpacity: 1, shadowOffset: { width: 0, height: 12 }, shadowRadius: 20, elevation: 10 },
-  confirmModalTitle: { fontSize: 20, fontWeight: "700", color: COLORS.textPrimary, marginVertical: 12 },
-  confirmModalText: { fontSize: 15, textAlign: 'center', color: COLORS.textSecondary, marginBottom: 25, lineHeight: 22 },
-  confirmModalButtons: { flexDirection: 'row', width: '100%' },
-  confirmButton: { flex: 1, padding: 14, borderRadius: 12, alignItems: 'center', marginHorizontal: 8 },
-  deleteConfirmButton: { backgroundColor: COLORS.danger },
-  cancelConfirmButton: { backgroundColor: COLORS.textSecondary },
-  confirmButtonText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  cancelButtonText: { color: COLORS.card, fontWeight: '700', fontSize: 16 },
+  screen: {
+    flex: 1,
+    backgroundColor: COLORS.backgroundBase,
+  },
+  
+  // Header
+  header: {
+    backgroundColor: COLORS.card,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    elevation: 8,
+    overflow: 'hidden',
+  },
+  headerContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 50 : 18,
+    paddingBottom: 16,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  headerTitle: {
+    fontWeight: '900',
+    color: COLORS.textPrimary,
+    letterSpacing: -0.5,
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  
+  // View Mode Toggle
+  viewModeToggle: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 20,
+    padding: 4,
+  },
+  viewModeButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  viewModeButtonActive: {
+    backgroundColor: COLORS.card,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  
+  // Add Button
+  addButton: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowColor: COLORS.accentBlush,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  addButtonGradient: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  // Selection
+  selectionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  selectionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORS.card,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  
+  // Search
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+    borderWidth: 0,
+  },
+  searchInput: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  
+  // Filter Bar
+  filterBar: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  categoryScroll: {
+    flex: 1,
+    marginRight: 12,
+  },
+  categoryContainer: {
+    paddingRight: 20,
+    gap: 12,
+  },
+  categoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 6,
+  },
+  categoryChipActive: {
+    borderWidth: 0,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  categoryText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  categoryTextActive: {
+    color: 'white',
+  },
+  completedToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 6,
+  },
+  completedToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  completedCount: {
+    fontSize: 12,
+    color: COLORS.textTertiary,
+    fontWeight: '600',
+  },
+  
+  // Task Card
+  taskCard: {
+    marginBottom: 12,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  taskCardList: {
+    width: '100%',
+  },
+  taskCardGrid: {
+    width: (width - 52) / 2,
+  },
+  taskCardBlur: {
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  taskCardTouchable: {
+    flex: 1,
+  },
+  taskCardInner: {
+    flexDirection: 'row',
+  },
+  taskAccent: {
+    width: 6,
+    height: '100%',
+  },
+  taskContent: {
+    flex: 1,
+    padding: 16,
+  },
+  taskHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  checkbox: {
+    marginRight: 12,
+  },
+  taskInfo: {
+    flex: 1,
+  },
+  taskTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 6,
+  },
+  taskTitleCompleted: {
+    textDecorationLine: 'line-through',
+    color: COLORS.textTertiary,
+  },
+  taskMeta: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  editButton: {
+    padding: 4,
+    marginLeft: 8,
+  },
+  taskFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 12,
+  },
+  dueBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  dueText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
+  timeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  timeText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  notifBadge: {
+    backgroundColor: COLORS.sage + '20',
+    padding: 4,
+    borderRadius: 12,
+  },
+  taskDescription: {
+    fontSize: 13,
+    color: COLORS.textTertiary,
+    marginTop: 8,
+  },
+  
+  // Swipe
+  swipeLeft: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  swipeRight: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+  },
+  swipeGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    height: '100%',
+    gap: 8,
+  },
+  swipeText: {
+    color: 'white',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  
+  // Quick Add
+  quickAddContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    zIndex: 100,
+  },
+  quickAddBlur: {
+    borderRadius: 30,
+    overflow: 'hidden',
+  },
+  quickAddInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: Platform.OS === 'ios' ? 16 : 12,
+    backgroundColor: COLORS.card,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  quickAddInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  quickAddSubmit: {
+    marginLeft: 8,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  quickAddSubmitGradient: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  // Task List
+  taskListContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  
+  // Loading
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
+  },
+  
+  // Empty State
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 15,
+    color: COLORS.textTertiary,
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 40,
+  },
+  emptyButton: {
+    borderRadius: 30,
+    overflow: 'hidden',
+    shadowColor: COLORS.accentBlush,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  emptyButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    gap: 8,
+  },
+  emptyButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  
+  // Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 20,
+    paddingHorizontal: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+    maxHeight: height * 0.9,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  modalClose: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.surfaceVariant,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalScrollContent: {
+    paddingBottom: 20,
+  },
+  
+  // Form Elements
+  formSection: {
+    marginBottom: 20,
+  },
+  formLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  requiredStar: {
+    color: COLORS.danger,
+  },
+  characterCount: {
+    fontSize: 11,
+    color: COLORS.textTertiary,
+    fontWeight: '500',
+  },
+  formInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formTextArea: {
+    alignItems: 'flex-start',
+  },
+  formTextAreaInput: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  formInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  formDateTimeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  formDateTimeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formDateTimeText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  formChipGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  formChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  
+  // Form Notifications
+  formSwitchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  formSwitchLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  formNotifPresets: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  formNotifPreset: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: COLORS.surfaceVariant,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formNotifPresetActive: {
+    backgroundColor: COLORS.sage,
+    borderWidth: 0,
+  },
+  formNotifPresetText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  formNotifPresetTextActive: {
+    color: 'white',
+  },
+  formNotifTimeDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.sage + '15',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 16,
+    marginBottom: 16,
+    gap: 8,
+  },
+  formNotifTimeText: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.sage,
+    fontWeight: '600',
+  },
+  
+  // Form Save Button
+  formSaveButton: {
+    marginTop: 24,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: COLORS.accentBlush,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  formSaveGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    gap: 8,
+  },
+  formSaveText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '800',
+  },
 });
