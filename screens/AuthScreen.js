@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ActivityIndicator, StyleSheet, View, Text } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../context/AppContext";
 
 const COLORS = {
@@ -10,18 +10,18 @@ const COLORS = {
 };
 
 export default function AuthScreen({ navigation }) {
-  const { user, loading, appInitialized } = useApp();
+  const { user, loading } = useApp();
 
   useEffect(() => {
     // Only navigate when loading is complete and app is initialized
-    if (loading || !appInitialized) return;
+    if (loading) return;
     
     if (user) {
       navigation.replace("Main");
     } else {
       navigation.replace("Login");
     }
-  }, [user, loading, appInitialized, navigation]);
+  }, [user, loading, navigation]);
 
   // Optional: Add a timeout in case loading takes too long
   useEffect(() => {

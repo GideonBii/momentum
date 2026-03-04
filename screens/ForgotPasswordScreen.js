@@ -1,6 +1,5 @@
 // ./screens/ForgotPasswordScreen.js
 import { Ionicons } from "@expo/vector-icons";
-import { sendPasswordResetEmail } from "firebase/auth";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -15,7 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { auth } from "../firebaseConfig";
+import { supabase } from "../supabaseConfig";
 
 const COLORS = {
   background: "#FCF7F5",
@@ -45,26 +44,32 @@ export default function ForgotPasswordScreen({ navigation }) {
 
     setLoading(true);
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: "momentumapp://reset-password",
+      });
+
+      if (error) {
+        let errorMessage = "Failed to send reset email. Please try again.";
+
+        if (error.message?.includes("rate limit") || error.message?.includes("too many")) {
+          errorMessage = "Too many attempts. Please try again later.";
+        } else if (error.message?.includes("valid email")) {
+          errorMessage = "Please enter a valid email address.";
+        }
+
+        Alert.alert("Error", errorMessage);
+        return;
+      }
+
       setEmailSent(true);
       Alert.alert(
-        "Email Sent", 
+        "Email Sent",
         "Check your inbox for password reset instructions",
         [{ text: "OK", onPress: () => navigation.goBack() }]
       );
     } catch (error) {
       console.error("Password reset error:", error);
-      let errorMessage = "Failed to send reset email. Please try again.";
-      
-      if (error.code === "auth/user-not-found") {
-        errorMessage = "No account found with this email address.";
-      } else if (error.code === "auth/invalid-email") {
-        errorMessage = "Please enter a valid email address.";
-      } else if (error.code === "auth/too-many-requests") {
-        errorMessage = "Too many attempts. Please try again later.";
-      }
-      
-      Alert.alert("Error", errorMessage);
+      Alert.alert("Error", "Failed to send reset email. Please try again.");
     } finally {
       setLoading(false);
     }

@@ -1,12 +1,11 @@
 // ./screens/RegisterScreen.js
 import { Ionicons } from "@expo/vector-icons";
-import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -15,10 +14,9 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  Modal,
 } from "react-native";
 import { useApp } from "../context/AppContext";
-import { auth, db } from "../firebaseConfig";
+import { supabase } from "../supabaseConfig";
 
 const COLORS = {
   background: "#FCF7F5",
@@ -37,7 +35,7 @@ const COLORS = {
 };
 
 export default function RegisterScreen({ navigation }) {
-  const { setUser } = useApp();
+  const { setUser, setProfileUpdates } = useApp();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     displayName: "",
@@ -80,42 +78,54 @@ export default function RegisterScreen({ navigation }) {
 
     setLoading(true);
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-
-      // Update profile with display name
-      await updateProfile(user, {
-        displayName: displayName.trim(),
-      });
-
-      // Create user document in Firestore with acceptance records
-      await setDoc(doc(db, "users", user.uid), {
-        uid: user.uid,
-        displayName: displayName.trim(),
+      // Sign up with Supabase Auth
+      const { data, error: signUpError } = await supabase.auth.signUp({
         email: email.toLowerCase(),
-        acceptedTerms: true,
-        acceptedPrivacy: true,
-        termsAcceptedDate: new Date(),
-        privacyAcceptedDate: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        password,
+        options: {
+          data: {
+            username: displayName.trim(),
+            display_name: displayName.trim(),
+          },
+        },
       });
 
-      setUser(user);
+      if (signUpError) {
+        let errorMessage = "Registration failed. Please try again.";
+
+        if (signUpError.message?.includes("already registered") || signUpError.message?.includes("already been registered")) {
+          errorMessage = "This email is already registered.";
+        } else if (signUpError.message?.includes("valid email")) {
+          errorMessage = "Please enter a valid email address.";
+        } else if (signUpError.message?.includes("Password should")) {
+          errorMessage = "Password must be at least 6 characters.";
+        }
+
+        Alert.alert("Error", errorMessage);
+        return;
+      }
+
+      // Update the profile row (created by DB trigger) with username + terms acceptance
+      if (data.user) {
+        await supabase.from("profiles").upsert({
+          id: data.user.id,
+          username: displayName.trim(),
+          accepted_terms: true,
+          accepted_privacy: true,
+          terms_accepted_date: new Date().toISOString(),
+          privacy_accepted_date: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        console.log("✅ Profile updated for:", data.user.email);
+        // Push username into AppContext immediately so HomeScreen/Drawer
+        // show the real name without waiting for the realtime event
+        setProfileUpdates?.({ username: displayName.trim() });
+      }
+
       Alert.alert("Success", "Account created successfully!");
     } catch (error) {
       console.error("Registration error:", error);
-      let errorMessage = "Registration failed. Please try again.";
-      
-      if (error.code === "auth/email-already-in-use") {
-        errorMessage = "This email is already registered.";
-      } else if (error.code === "auth/invalid-email") {
-        errorMessage = "Please enter a valid email address.";
-      } else if (error.code === "auth/weak-password") {
-        errorMessage = "Password is too weak.";
-      }
-      
-      Alert.alert("Error", errorMessage);
+      Alert.alert("Error", "Registration failed. Please try again.");
     } finally {
       setLoading(false);
     }

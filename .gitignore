@@ -1,99 +1,16 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# Dependencies
 node_modules/
-.pnp
-.pnp.js
-
-# Expo
 .expo/
-.expo-shared/
 dist/
-web-build/
-
-# Native builds (managed workflow should ignore these)
-android/
-ios/
-
-# Native
-.kotlin/
-*.orig.*
+npm-debug.*
 *.jks
 *.p8
 *.p12
 *.key
 *.mobileprovision
-*.keystore
-
-# Metro
-.metro-health-check*
-
-# Debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-*.log
-lerna-debug.log*
+*.orig.*
+web-build/
+ios
+android
 
 # macOS
 .DS_Store
-*.pem
-.AppleDouble
-.LSOverride
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Environment files
-.env
-.env*.local
-.env.development
-.env.production
-.env.test
-
-# TypeScript
-*.tsbuildinfo
-tsconfig.tsbuildinfo
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-*.sublime-project
-*.sublime-workspace
-
-# Testing
-coverage/
-.nyc_output/
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
-.parcel-cache/
-
-# Build artifacts
-*.apk
-*.aab
-*.ipa
-build/
-*.app.dSYM.zip
-*.app.zip
-
-# Firebase
-.firebase/
-firebase-debug.log
-firestore-debug.log
-
-# Package managers
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-.pnpm-store/
-
-# Custom
-app-example

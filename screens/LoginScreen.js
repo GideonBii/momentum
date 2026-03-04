@@ -1,6 +1,5 @@
 // ./screens/LoginScreen.js
 import { Ionicons } from "@expo/vector-icons";
-import { signInWithEmailAndPassword } from "firebase/auth";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -16,7 +15,7 @@ import {
   View,
 } from "react-native";
 import { useApp } from "../context/AppContext";
-import { auth } from "../firebaseConfig";
+import { supabase } from "../supabaseConfig";
 
 const COLORS = {
   background: "#FCF7F5",
@@ -52,33 +51,28 @@ export default function LoginScreen({ navigation }) {
 
     setLoading(true);
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      
-      // Check if setUser exists before calling it
-      if (setUser && typeof setUser === 'function') {
-        setUser(userCredential.user);
-      } else {
-        console.warn('setUser is not available in context');
-        // You might want to navigate manually here
-        // navigation.navigate('MainApp');
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+      if (error) {
+        let errorMessage = "Login failed. Please try again.";
+
+        if (error.message?.includes("Invalid login credentials")) {
+          errorMessage = "Invalid email or password.";
+        } else if (error.message?.includes("Email not confirmed")) {
+          errorMessage = "Please verify your email before signing in.";
+        } else if (error.message?.includes("Too many requests")) {
+          errorMessage = "Too many failed attempts. Please try again later.";
+        }
+
+        Alert.alert("Error", errorMessage);
+        return;
       }
+
+      // AppContext's onAuthStateChange will pick up the new session automatically
+      console.log("✅ Logged in:", data.user?.email);
     } catch (error) {
       console.error("Login error:", error);
-      let errorMessage = "Login failed. Please try again.";
-      
-      if (error.code === "auth/invalid-email") {
-        errorMessage = "Please enter a valid email address.";
-      } else if (error.code === "auth/user-not-found") {
-        errorMessage = "No account found with this email.";
-      } else if (error.code === "auth/wrong-password") {
-        errorMessage = "Incorrect password. Please try again.";
-      } else if (error.code === "auth/too-many-requests") {
-        errorMessage = "Too many failed attempts. Please try again later.";
-      } else if (error.code === "auth/invalid-credential") {
-        errorMessage = "Invalid email or password.";
-      }
-      
-      Alert.alert("Error", errorMessage);
+      Alert.alert("Error", "Login failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -90,9 +84,6 @@ export default function LoginScreen({ navigation }) {
       [field]: value
     }));
   };
-
-  // Debug: Check if setUser is available
-  console.log('setUser available:', !!setUser);
 
   return (
     <SafeAreaView style={styles.screen}>

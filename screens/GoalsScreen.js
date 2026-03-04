@@ -1,4614 +1,3526 @@
-// screens/GoalsScreen.js - PRODUCTION READY VERSION WITH ALL CRITICAL FIXES
+// screens/GoalsScreen.js
+// 🎯 UPDATED REDESIGN - February 28, 2026
+// ✅ Added notificationSent flag for cloud function integration
+// ✅ Added proper notification scheduling/cleanup
+// ✅ Fixed all imports and dependencies
+// ✅ Removed duplicate stats bar (now only in analytics)
+// ✅ Added "Tap to add milestone" hint
+// ✅ FIXED: Purple theme matching home screen goals slide
+// ✅ FIXED: Removed custom_notification_message column error
+// ✅ FIXED: notificationIds not defined error
+// ✅ FIXED: goal.dueDate vs due_date inconsistency
+// ✅ FIXED: shared_with field reference errors
+// ✅ FIXED: notificationTime type conversion
+// ✅ FIXED: milestone date handling
+// ✅ FIXED: profile email lookup
+// ✅ FIXED: owner check logic
+// ✅ FIXED: Notification scheduling - proper field mapping (enableNotifications)
+// ✅ FIXED: Notification trigger format - correct Expo trigger syntax
 
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useNavigation } from "@react-navigation/native";
-import * as Notifications from 'expo-notifications';
-import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+import { BlurView } from 'expo-blur';
 import * as Haptics from "expo-haptics";
-import * as Device from 'expo-device';
-import Constants from 'expo-constants';
-import {
-  addDoc,
-  arrayRemove,
-  arrayUnion,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
-  updateDoc,
-  where,
-} from "firebase/firestore";
-import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { LinearGradient } from 'expo-linear-gradient';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Dimensions,
+  Easing,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
+  StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-  Switch,
-  Linking,
-  Animated,
-  KeyboardAvoidingView
+  View
 } from "react-native";
 import { Circle, Svg } from "react-native-svg";
+
 import { useApp } from "../context/AppContext";
-import { db } from "../firebaseConfig";
+import { supabase } from "../supabaseConfig";
 
-// Constants
-// Constants moved to proper location below (after imports)
+// Import notifications
+import {
+  cancelGoalNotifications,
+  hasNotificationPermissions,
+  NOTIFICATION_TYPES,
+  requestNotificationPermissions,
+  scheduleGoalNotifications,
+  sendNotification
+} from "../utils/notifications";
 
-// Safe import of centralized notification utilities with fallbacks
-let scheduleGoalNotifications, cancelGoalNotifications, requestNotificationPermissions, 
-    configureNotificationHandler, sendNotification, NOTIFICATION_TYPES;
+const { width, height } = Dimensions.get("window");
 
-try {
-  const notificationUtils = require("../utils/notifications");
-  scheduleGoalNotifications = notificationUtils.scheduleGoalNotifications;
-  cancelGoalNotifications = notificationUtils.cancelGoalNotifications;
-  requestNotificationPermissions = notificationUtils.requestNotificationPermissions;
-  configureNotificationHandler = notificationUtils.configureNotificationHandler;
-  sendNotification = notificationUtils.sendNotification;
-  NOTIFICATION_TYPES = notificationUtils.NOTIFICATION_TYPES;
-} catch (error) {
-  console.error("Failed to load notification utilities:", error);
-  // Provide fallback functions
-  scheduleGoalNotifications = async () => ({ ids: [] });
-  cancelGoalNotifications = async () => {};
-  requestNotificationPermissions = async () => false;
-  configureNotificationHandler = () => {};
-  sendNotification = async () => {};
-  NOTIFICATION_TYPES = {
-    GOAL_UPDATED: 'goal_updated',
-    MILESTONE_COMPLETED: 'milestone_completed',
-    MILESTONE_ADDED: 'milestone_added',
-    GOAL_INVITE: 'goal_invite',
-    GOAL_DELETED: 'goal_deleted'
-  };
-}
+/* ================================================================================
+   🎨 COLORS - PURPLE THEME MATCHING HOME SCREEN GOALS SLIDE
+   ================================================================================ */
 
-const { width } = Dimensions.get("window");
-
-// Theme - Updated to match PlannerScreen
 const COLORS = {
-  backgroundBase: "#FAFAFA",
-  layer: "#FAFAFA",
+  backgroundBase: "#F8F5FA", // Light purple-tinted background
   card: "#FFFFFF",
-  textPrimary: "#4A3228",
-  textSecondary: "#A98467",
-  accentBlush: "#D8A39D",
-  accentWarm: "#E3B777",
-  sage: "#5D8B7E",
-  nudeShadow: "rgba(216,163,157,0.12)",
+  textPrimary: "#3A2E45", // Dark purple-black
+  textSecondary: "#6B5B7C", // Medium purple
+  accentBlush: "#795D94", // Primary purple (from home screen)
+  accentWarm: "#5C4673", // Dark purple (from home screen)
+  sage: "#4A3B5C", // Deep purple
+  nudeShadow: "rgba(121,93,148,0.12)", // Purple-tinted shadow
   shadowDark: "rgba(0,0,0,0.06)",
   danger: "#FF6347",
-  success: "#5D8B7E",
+  success: "#795D94",
   info: "#2196F3",
   warning: "#FFA726",
+  surfaceVariant: "#EDE7F2", // Light purple surface
+  textTertiary: "#8F7FA3", // Muted purple
+  cardBorder: "rgba(121,93,148,0.2)", // Purple border
+  gradientStart: "#F5F0FA", // Light purple gradient start
+  gradientEnd: "#EAE2F0", // Soft purple gradient end
+  overlay: "rgba(58,46,69,0.4)", // Dark purple overlay
   archived: "#95A5A6",
-  template: "#9B59B6",
   recurring: "#1ABC9C",
-  chartGrid: "#F0F0F0",
 };
 
-const PRIORITY_COLORS = {
-  high: COLORS.accentBlush,
-  medium: COLORS.accentWarm,
-  low: COLORS.sage,
+const CATEGORY_CONFIG = {
+  personal: { 
+    label: "Personal", 
+    icon: "person-outline", 
+    color: "#795D94", // Purple
+    lightColor: "#E9E1F0",
+    gradient: ["#E9E1F0", "#795D94"],
+  },
+  work: { 
+    label: "Work", 
+    icon: "briefcase-outline", 
+    color: "#5C4673", // Deep purple
+    lightColor: "#E0D6E8",
+    gradient: ["#E0D6E8", "#5C4673"],
+  },
+  health: { 
+    label: "Health", 
+    icon: "fitness-outline", 
+    color: "#8F7FA3", // Muted purple
+    lightColor: "#F0EAF5",
+    gradient: ["#F0EAF5", "#8F7FA3"],
+  },
+  learning: { 
+    label: "Learning", 
+    icon: "school-outline", 
+    color: "#6B5B7C", // Medium purple
+    lightColor: "#EBE4F2",
+    gradient: ["#EBE4F2", "#6B5B7C"],
+  },
+  finance: { 
+    label: "Finance", 
+    icon: "cash-outline", 
+    color: "#4A3B5C", // Deep purple
+    lightColor: "#E5DCEB",
+    gradient: ["#E5DCEB", "#4A3B5C"],
+  },
+  other: { 
+    label: "Other", 
+    icon: "ellipsis-horizontal-outline", 
+    color: "#8F7FA3", // Muted purple
+    lightColor: "#F5F0F8",
+    gradient: ["#F5F0F8", "#8F7FA3"],
+  },
 };
 
-const CATEGORY_COLORS = {
-  personal: COLORS.accentBlush,
-  work: COLORS.accentWarm,
-  health: COLORS.sage,
-  learning: "#9B59B6",
-  finance: "#3498DB",
-  other: "#95A5A6",
+const PRIORITY_CONFIG = {
+  high: {
+    label: "High",
+    icon: "warning-outline",
+    color: "#795D94", // Purple
+    lightColor: "#E9E1F0",
+    gradient: ["#E9E1F0", "#795D94"],
+  },
+  medium: {
+    label: "Medium",
+    icon: "remove",
+    color: "#5C4673", // Deep purple
+    lightColor: "#E0D6E8",
+    gradient: ["#E0D6E8", "#5C4673"],
+  },
+  low: {
+    label: "Low",
+    icon: "arrow-down",
+    color: "#8F7FA3", // Muted purple
+    lightColor: "#F0EAF5",
+    gradient: ["#F0EAF5", "#8F7FA3"],
+  },
 };
-
-const PRIORITY_OPTIONS = [
-  { value: "high", label: "High", color: PRIORITY_COLORS.high },
-  { value: "medium", label: "Medium", color: PRIORITY_COLORS.medium },
-  { value: "low", label: "Low", color: PRIORITY_COLORS.low },
-];
-
-const CATEGORY_OPTIONS = [
-  { value: "personal", label: "Personal", icon: "person", color: CATEGORY_COLORS.personal },
-  { value: "work", label: "Work", icon: "briefcase", color: CATEGORY_COLORS.work },
-  { value: "health", label: "Health", icon: "fitness", color: CATEGORY_COLORS.health },
-  { value: "learning", label: "Learning", icon: "school", color: CATEGORY_COLORS.learning },
-  { value: "finance", label: "Finance", icon: "cash", color: CATEGORY_COLORS.finance },
-  { value: "other", label: "Other", icon: "ellipsis-horizontal", color: CATEGORY_COLORS.other },
-];
 
 const RECURRENCE_OPTIONS = [
-  { value: 'none', label: 'None' },
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
-  { value: 'yearly', label: 'Yearly' },
+  { value: 'none', label: 'Once', icon: 'today-outline' },
+  { value: 'daily', label: 'Daily', icon: 'sunny-outline' },
+  { value: 'weekly', label: 'Weekly', icon: 'calendar-outline' },
+  { value: 'monthly', label: 'Monthly', icon: 'calendar-number-outline' },
+  { value: 'yearly', label: 'Yearly', icon: 'calendar-outline' },
 ];
 
-const getSharedGoalsCollectionPath = (appId) =>
-  `artifacts/${appId || "default-app-id"}/public/data/sharedGoals`;
+const NOTIFICATION_PRESETS = [
+  { label: "At due time", minutes: 0 },
+  { label: "15 min before", minutes: -15 },
+  { label: "30 min before", minutes: -30 },
+  { label: "1 hour before", minutes: -60 },
+  { label: "2 hours before", minutes: -120 },
+  { label: "1 day before", minutes: -1440 },
+  { label: "Custom", minutes: null },
+];
 
-const triggerHaptic = async (style = "light") => {
-  try {
-    await Haptics.impactAsync(
-      style === "heavy" ? Haptics.ImpactFeedbackStyle.Heavy :
-      style === "medium" ? Haptics.ImpactFeedbackStyle.Medium :
-      Haptics.ImpactFeedbackStyle.Light
-    );
-  } catch (e) {
-    console.warn("Haptic feedback failed:", e);
-  }
+/* ================================================================================
+   📝 FORM REDUCER - Clean and efficient
+   ================================================================================ */
+
+const initialState = {
+  id: null,
+  title: "",
+  description: "",
+  dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+  dueTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  category: "personal",
+  priority: "medium",
+  recurrence: { type: 'none', interval: 1 },
+  enable_notifications: true,
+  notificationTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 - 30 * 60000),
+  // ✅ FIXED: Removed customNotificationMessage (column doesn't exist)
+  milestones: [],
+  tags: [],
+  isEditing: false,
+  shared_with: [],
 };
 
-// Helper function to check and request notification permissions
-const checkAndRequestNotificationPermissions = async () => {
-  try {
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+function goalsReducer(state, action) {
+  switch (action.type) {
+    case 'SET_FIELD':
+      return { ...state, [action.field]: action.value };
     
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      
-      if (status !== 'granted') {
-        Alert.alert(
-          'Notification Permissions Required',
-          'Please enable notifications in your device settings to receive goal reminders.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { 
-              text: 'Open Settings', 
-              onPress: () => {
-                if (Platform.OS === 'ios') {
-                  Linking.openURL('app-settings:');
-                } else {
-                  Linking.openSettings();
-                }
-              }
-            }
-          ]
-        );
-        return false;
-      }
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('Error checking notification permissions:', error);
-    return false;
-  }
-};
-
-// ========================================================================
-// PRODUCTION CONSTANTS
-// ========================================================================
-
-// Time constants (milliseconds)
-const SECOND = 1000;
-const MINUTE = 60 * SECOND;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-const WEEK = 7 * DAY;
-
-// Utility function to normalize date to midnight UTC for accurate day calculations
-const normalizeToMidnightUTC = (date) => {
-  const normalized = new Date(date);
-  normalized.setUTCHours(0, 0, 0, 0);
-  return normalized;
-};
-
-// Calculate days remaining with timezone safety
-const calculateDaysRemaining = (dueDate) => {
-  const today = normalizeToMidnightUTC(new Date());
-  const due = normalizeToMidnightUTC(dueDate);
-  const diffMs = due - today;
-  return Math.ceil(diffMs / DAY);
-};
-
-// Input validation
-const MAX_TITLE_LENGTH = 120;
-const MAX_DESCRIPTION_LENGTH = 500;
-const MAX_TAG_LENGTH = 30;
-const MAX_TAGS = 5;
-const MAX_MILESTONES = 20;
-const MAX_COLLABORATORS = 10;
-
-// Default values
-const DEFAULT_REMINDER_OFFSET = 30 * MINUTE;
-const CACHE_VERSION = 2;
-const CACHE_KEY_PREFIX = 'goals_cache_v' + CACHE_VERSION + '_';
-const DEBOUNCE_DELAY = 500;
-
-// UI constants
-const MAX_SEARCH_RESULTS = 50;
-const ANIMATION_DURATION = 300;
-const HAPTIC_FEEDBACK_DURATION = 50;
-
-// Enhanced docToGoal function with robust error handling
-const docToGoal = (d, isOwner = true, sharedDocId = null, ownerId = null) => {
-  try {
-    const data = d.data ? d.data() : d;
-    // FIX: Generate truly unique ID if missing to prevent duplicate key errors
-    const id = d.id || `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const milestones = Array.isArray(data.milestones) ? data.milestones : [];
-    const completed = milestones.filter((m) => m?.completed).length;
-    const progress = milestones.length ? Math.round((completed / milestones.length) * 100) : 0;
-    
-    // Robust date handling
-    let dueDate;
-    try {
-      const dueDateValue = data.dueDate;
-      if (dueDateValue?.toDate) {
-        dueDate = dueDateValue.toDate();
-      } else if (dueDateValue) {
-        dueDate = new Date(dueDateValue);
-      } else {
-        // Set default due date to 30 days from now
-        dueDate = new Date();
-        dueDate.setDate(dueDate.getDate() + 30);
-      }
-    } catch (error) {
-      console.error("Error parsing due date:", error);
-      dueDate = new Date(Date.now() + 30 * DAY); // 30 days from now
-    }
-    
-    // Calculate time spent
-    const totalTimeSpent = Array.isArray(data.timeEntries) ? 
-      data.timeEntries.reduce((sum, entry) => sum + (entry.duration || 0), 0) : 0;
-    
-    return {
-      id: id,
-      ...data,
-      dueDate,
-      milestones,
-      progress,
-      daysRemaining: calculateDaysRemaining(dueDate),
-      isOwner,
-      isCollaborator: !isOwner,
-      sharedDocId,
-      ownerId: ownerId || data.userId,
-      priority: data.priority || "medium",
-      category: data.category || "personal",
-      tags: Array.isArray(data.tags) ? data.tags : [],
-      archived: Boolean(data.archived),
-      isTemplate: Boolean(data.isTemplate),
-      recurrence: data.recurrence || { type: 'none', interval: 1 },
-      timeEntries: Array.isArray(data.timeEntries) ? data.timeEntries : [],
-      totalTimeSpent,
-      estimatedTime: Number(data.estimatedTime) || 0,
-      enableNotifications: data.enableNotifications !== false,
-      notificationIds: Array.isArray(data.notificationIds) ? data.notificationIds : [],
-      notificationTime: data.notificationTime ? new Date(data.notificationTime) : new Date(dueDate.getTime() - DEFAULT_REMINDER_OFFSET),
-      customNotificationMessage: data.customNotificationMessage || "",
-      syncToCalendar: Boolean(data.syncToCalendar),
-      createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || new Date()),
-    };
-  } catch (error) {
-    console.error("Error converting document to goal:", error, d);
-    // Return a minimal valid goal object with unique ID
-    const now = new Date();
-    const defaultDueDate = new Date(now.getTime() + 30 * DAY);
-    return {
-      id: `error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      title: "Error Loading Goal",
-      description: "",
-      dueDate: defaultDueDate,
-      milestones: [],
-      progress: 0,
-      daysRemaining: 30,
-      isOwner: true,
-      isCollaborator: false,
-      sharedDocId: null,
-      ownerId: null,
-      priority: "medium",
-      category: "personal",
-      tags: [],
-      archived: false,
-      isTemplate: false,
-      recurrence: { type: 'none', interval: 1 },
-      timeEntries: [],
-      totalTimeSpent: 0,
-      estimatedTime: 0,
-      enableNotifications: true,
-      notificationIds: [],
-      notificationTime: new Date(defaultDueDate.getTime() - DEFAULT_REMINDER_OFFSET),
-      customNotificationMessage: "",
-      syncToCalendar: false,
-      createdAt: now,
-    };
-  }
-};
-
-// Helper function to merge goals by ID (preserves local state)
-const mergeGoalsById = (existingGoals, newGoals) => {
-  const merged = [...existingGoals];
-  const existingIds = new Set(existingGoals.map(g => g.id));
-  
-  newGoals.forEach(newGoal => {
-    const existingIndex = merged.findIndex(g => g.id === newGoal.id);
-    if (existingIndex >= 0) {
-      // Preserve local state like active timer, animations, etc.
-      const existing = merged[existingIndex];
-      merged[existingIndex] = {
-        ...newGoal,
-        // Preserve local-only state
-        localTimer: existing.localTimer,
-        isAnimating: existing.isAnimating,
-        expanded: existing.expanded,
+    case 'SET_DUE_DATE':
+      const newDate = action.payload;
+      const currentTime = state.dueTime;
+      const combinedDateTime = new Date(
+        newDate.getFullYear(),
+        newDate.getMonth(),
+        newDate.getDate(),
+        currentTime.getHours(),
+        currentTime.getMinutes()
+      );
+      return { 
+        ...state, 
+        dueDate: combinedDateTime,
+        dueTime: combinedDateTime,
+        notificationTime: new Date(combinedDateTime.getTime() - 30 * 60000)
       };
-    } else {
-      merged.push(newGoal);
-    }
-  });
+    
+    case 'SET_DUE_TIME':
+      const newTime = action.payload;
+      const currentDate = state.dueDate;
+      const combined = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        newTime.getHours(),
+        newTime.getMinutes()
+      );
+      return { 
+        ...state, 
+        dueDate: combined,
+        dueTime: combined,
+        notificationTime: new Date(combined.getTime() - 30 * 60000)
+      };
+    
+    case 'SET_NOTIFICATION_TIME':
+      return { ...state, notificationTime: action.payload };
+    
+    case 'ADD_MILESTONE':
+      return {
+        ...state,
+        milestones: [
+          ...state.milestones,
+          {
+            id: `temp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            title: action.payload.title,
+            dueDate: action.payload.dueDate,
+            completed: false,
+            createdAt: new Date(),
+          }
+        ]
+      };
+    
+    case 'TOGGLE_MILESTONE':
+      return {
+        ...state,
+        milestones: state.milestones.map((m, idx) =>
+          idx === action.index ? { ...m, completed: !m.completed } : m
+        )
+      };
+    
+    case 'REMOVE_MILESTONE':
+      return {
+        ...state,
+        milestones: state.milestones.filter((_, idx) => idx !== action.index)
+      };
+    
+    case 'ADD_TAG':
+      if (state.tags.includes(action.payload)) return state;
+      if (state.tags.length >= 5) return state;
+      return {
+        ...state,
+        tags: [...state.tags, action.payload]
+      };
+    
+    case 'REMOVE_TAG':
+      return {
+        ...state,
+        tags: state.tags.filter(t => t !== action.payload)
+      };
+    
+    case 'RESET':
+      const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      return {
+        ...initialState,
+        dueDate: nextWeek,
+        dueTime: nextWeek,
+        notificationTime: new Date(nextWeek.getTime() - 30 * 60000),
+      };
+    
+    case 'LOAD_GOAL':
+      const goalDueDate = action.payload.dueDate ? new Date(action.payload.dueDate) : 
+                         action.payload.due_date ? new Date(action.payload.due_date) : new Date();
+      return {
+        ...state,
+        ...action.payload,
+        isEditing: true,
+        id: action.payload.id,
+        title: action.payload.title || "",
+        description: action.payload.description || "",
+        dueDate: goalDueDate,
+        dueTime: goalDueDate,
+        category: action.payload.category || "personal",
+        priority: action.payload.priority || "medium",
+        recurrence: action.payload.recurrence || { type: 'none', interval: 1 },
+        enable_notifications: action.payload.enable_notifications !== false,
+        notificationTime: action.payload.notification_time 
+          ? new Date(action.payload.notification_time)
+          : new Date(goalDueDate.getTime() - 30 * 60000),
+        // ✅ FIXED: Removed custom_notification_message
+        milestones: action.payload.milestones || [],
+        tags: action.payload.tags || [],
+        shared_with: action.payload.shared_with || [],
+      };
+    
+    default:
+      return state;
+  }
+}
+
+/* ================================================================================
+   📊 PROGRESS RING - Animated with purple theme
+   ================================================================================ */
+
+const ProgressRing = ({ progress = 0, size = 60, strokeWidth = 4, showLabel = true }) => {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
   
-  return merged;
+  let color = COLORS.sage;
+  if (progress >= 100) color = COLORS.success;
+  else if (progress >= 75) color = COLORS.accentWarm;
+  else if (progress >= 50) color = COLORS.accentBlush;
+  
+  return (
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {/* Background Circle */}
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={COLORS.surfaceVariant}
+          strokeWidth={strokeWidth}
+          fill="none"
+        />
+        {/* Progress Circle */}
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          fill="none"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          transform={`rotate(-90, ${size / 2}, ${size / 2})`}
+        />
+      </Svg>
+      {showLabel && (
+        <View style={{ position: 'absolute' }}>
+          <Text style={{ fontSize: size * 0.2, fontWeight: '700', color }}>
+            {Math.round(progress)}%
+          </Text>
+        </View>
+      )}
+    </View>
+  );
 };
 
-// Email resolution cache
-const emailResolutionCache = {
-  cache: new Map(),
-  get: (email) => emailResolutionCache.cache.get(email),
-  set: (email, result) => {
-    emailResolutionCache.cache.set(email, result);
-    // Auto-clean old entries
-    if (emailResolutionCache.cache.size > 100) {
-      const firstKey = emailResolutionCache.cache.keys().next().value;
-      emailResolutionCache.cache.delete(firstKey);
-    }
-  },
-  clear: () => emailResolutionCache.cache.clear(),
+/* ================================================================================
+   🏷️ CATEGORY BADGE - Purple theme
+   ================================================================================ */
+
+const CategoryBadge = ({ category, size = 'small' }) => {
+  const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG.other;
+  
+  if (size === 'small') {
+    return (
+      <View style={[styles.categoryPill, { backgroundColor: config.lightColor }]}>
+        <Ionicons name={config.icon} size={12} color={config.color} />
+        <Text style={[styles.categoryPillText, { color: config.color }]}>
+          {config.label}
+        </Text>
+      </View>
+    );
+  }
+  
+  return (
+    <LinearGradient
+      colors={config.gradient}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.categoryBadgeLarge}
+    >
+      <Ionicons name={config.icon} size={16} color="white" />
+      <Text style={styles.categoryBadgeLargeText}>{config.label}</Text>
+    </LinearGradient>
+  );
 };
 
-export default function GoalsScreen() {
-  // Safe date utilities
-  const createSafeDate = (dateValue) => {
-    try {
-      if (!dateValue) return new Date();
-      
-      if (dateValue?.toDate && typeof dateValue.toDate === 'function') {
-        return dateValue.toDate();
-      }
-      
-      if (dateValue instanceof Date) {
-        return isNaN(dateValue.getTime()) ? new Date() : dateValue;
-      }
-      
-      const date = new Date(dateValue);
-      return isNaN(date.getTime()) ? new Date() : date;
-    } catch (error) {
-      console.warn('Invalid date value:', dateValue);
-      return new Date();
-    }
+/* ================================================================================
+   ⚡ PRIORITY BADGE - Purple theme
+   ================================================================================ */
+
+const PriorityBadge = ({ priority }) => {
+  const config = PRIORITY_CONFIG[priority] || PRIORITY_CONFIG.medium;
+  
+  return (
+    <View style={[styles.priorityBadge, { backgroundColor: config.lightColor }]}>
+      <Ionicons name={config.icon} size={12} color={config.color} />
+      <Text style={[styles.priorityBadgeText, { color: config.color }]}>
+        {config.label}
+      </Text>
+    </View>
+  );
+};
+
+/* ================================================================================
+   🎯 GOAL CARD - Complete redesign with milestone hint
+   ================================================================================ */
+
+const GoalCard = ({ 
+  goal, 
+  onPress, 
+  onEdit, 
+  onDelete, 
+  onShare, 
+  onToggleNotification,
+  onToggleMilestone,
+  onAddMilestone,
+  isExpanded,
+  onExpand,
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const expandAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
+  
+  const category = CATEGORY_CONFIG[goal.category] || CATEGORY_CONFIG.other;
+  const priority = PRIORITY_CONFIG[goal.priority] || PRIORITY_CONFIG.medium;
+  
+  // ✅ FIXED: Handle both dueDate and due_date
+  const dueDate = goal.dueDate ? new Date(goal.dueDate) : 
+                  goal.due_date ? new Date(goal.due_date) : new Date();
+  const now = new Date();
+  const daysUntil = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
+  const isOverdue = daysUntil < 0 && goal.progress < 100;
+  const isDueSoon = daysUntil >= 0 && daysUntil <= 3 && goal.progress < 100;
+  const completedMilestones = goal.milestones?.filter(m => m.completed).length || 0;
+  const totalMilestones = goal.milestones?.length || 0;
+  
+  useEffect(() => {
+    Animated.timing(expandAnim, {
+      toValue: isExpanded ? 1 : 0,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [isExpanded]);
+  
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.98,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
   };
   
-  const getDaysDifference = (date1, date2) => {
-    const utc1 = Date.UTC(date1.getFullYear(), date1.getMonth(), date1.getDate());
-    const utc2 = Date.UTC(date2.getFullYear(), date2.getMonth(), date2.getDate());
-    return Math.ceil((utc2 - utc1) / DAY);
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
   };
   
-  const isDateInPast = (date) => {
-    return date.getTime() < Date.now();
+  const getDueLabel = () => {
+    if (goal.progress === 100) return "Completed";
+    if (isOverdue) return `${Math.abs(daysUntil)} days overdue`;
+    if (daysUntil === 0) return "Today";
+    if (daysUntil === 1) return "Tomorrow";
+    return `${daysUntil} days left`;
   };
   
-  const addTime = (date, milliseconds) => {
-    return new Date(date.getTime() + milliseconds);
+  const getDueColor = () => {
+    if (goal.progress === 100) return COLORS.success;
+    if (isOverdue) return COLORS.danger;
+    if (isDueSoon) return COLORS.warning;
+    return COLORS.textSecondary;
   };
   
-  const navigation = useNavigation();
-  const { user, appId } = useApp();
-
-  // Mount tracking
-  const isMounted = useRef(true);
-  const notificationsProcessed = useRef([]);
-
-  // --- Form State ---
-  const [goalTitle, setGoalTitle] = useState("");
-  const [goalDescription, setGoalDescription] = useState("");
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [isFormModalVisible, setIsFormModalVisible] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [currentGoal, setCurrentGoal] = useState(null);
-  const [selectedPriority, setSelectedPriority] = useState("medium");
-  const [selectedCategory, setSelectedCategory] = useState("personal");
-  const [tagInput, setTagInput] = useState("");
-  const [tags, setTags] = useState([]);
-
-  // --- Notification States ---
-  const [enableNotifications, setEnableNotifications] = useState(true);
-  const [notificationTime, setNotificationTime] = useState(new Date(Date.now() + DEFAULT_REMINDER_OFFSET));
-  const [customNotificationMessage, setCustomNotificationMessage] = useState("");
-  const [syncToCalendar, setSyncToCalendar] = useState(false);
-  const [showNotificationTimePicker, setShowNotificationTimePicker] = useState(false);
-  const [showNotificationDatePicker, setShowNotificationDatePicker] = useState(false);
-  const [notificationTimeMode, setNotificationTimeMode] = useState('date');
-  const [tempNotificationTime, setTempNotificationTime] = useState(new Date());
-  const [formStep, setFormStep] = useState(1);
-  const [formProgress, setFormProgress] = useState(25);
-  const slideAnim = useRef(new Animated.Value(0)).current;
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-
-  // Animation helper for step transitions
-  const animateToStep = useCallback((newStep) => {
-    if (!isMounted.current) return;
-    
-    const direction = newStep > formStep ? 1 : -1;
-    
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: direction * 50,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      if (isMounted.current) {
-        setFormStep(newStep);
-        slideAnim.setValue(-direction * 50);
+  return (
+    <Animated.View 
+      style={[
+        styles.goalCard,
+        {
+          transform: [{ scale: scaleAnim }],
+          borderColor: isOverdue ? COLORS.danger + '40' : 
+                      isDueSoon ? COLORS.warning + '40' : 
+                      COLORS.cardBorder,
+        }
+      ]}
+    >
+      <BlurView intensity={90} tint="light" style={styles.goalCardBlur}>
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          onPress={() => onExpand(goal.id)}
+          onLongPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            onEdit(goal);
+          }}
+          delayLongPress={500}
+        >
+          <View style={styles.goalCardHeader}>
+            {/* Deep purple accent stripe */}
+            <LinearGradient
+              colors={['#795D94', '#4A3B5C']}
+              style={styles.goalAccent}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+            />
+            
+            <View style={styles.goalContent}>
+              {/* Top row */}
+              <View style={styles.goalTopRow}>
+                <View style={styles.goalTitleContainer}>
+                  <Text style={styles.goalTitle} numberOfLines={1}>
+                    {goal.title}
+                  </Text>
+                  <View style={styles.goalBadges}>
+                    <PriorityBadge priority={goal.priority} />
+                    <CategoryBadge category={goal.category} />
+                  </View>
+                </View>
+                
+                <ProgressRing progress={goal.progress} size={52} />
+              </View>
+              
+              {/* Description */}
+              {goal.description ? (
+                <Text style={styles.goalDescription} numberOfLines={2}>
+                  {goal.description}
+                </Text>
+              ) : null}
+              
+              {/* Meta row */}
+              <View style={styles.goalMetaRow}>
+                <View style={[styles.dueBadge, { backgroundColor: getDueColor() + '15' }]}>
+                  <Ionicons 
+                    name={goal.progress === 100 ? "checkmark-circle" : isOverdue ? "alert-circle" : "calendar-outline"} 
+                    size={14} 
+                    color={getDueColor()} 
+                  />
+                  <Text style={[styles.dueText, { color: getDueColor() }]}>
+                    {getDueLabel()}
+                  </Text>
+                </View>
+                
+                {totalMilestones > 0 && (
+                  <View style={styles.milestoneBadge}>
+                    <Ionicons name="flag-outline" size={14} color={COLORS.textSecondary} />
+                    <Text style={styles.milestoneBadgeText}>
+                      {completedMilestones}/{totalMilestones}
+                    </Text>
+                  </View>
+                )}
+                
+                {goal.enable_notifications && !goal.archived && goal.progress < 100 && (
+                  <TouchableOpacity 
+                    onPress={() => onToggleNotification(goal)}
+                    style={styles.notificationBadge}
+                  >
+                    <Ionicons name="notifications" size={14} color={COLORS.info} />
+                  </TouchableOpacity>
+                )}
+                
+                {/* ✅ FIXED: Check shared_with array length */}
+                {goal.shared_with?.length > 0 && (
+                  <View style={styles.sharedBadge}>
+                    <Ionicons name="people" size={14} color={COLORS.accentBlush} />
+                    <Text style={styles.sharedBadgeText}>{goal.shared_with.length}</Text>
+                  </View>
+                )}
+              </View>
+              
+              {/* Tags */}
+              {goal.tags?.length > 0 && (
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.tagsScroll}
+                >
+                  <View style={styles.tagsContainer}>
+                    {goal.tags.map((tag, idx) => (
+                      <View key={idx} style={styles.tagPill}>
+                        <Text style={styles.tagText}>#{tag}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </TouchableOpacity>
         
-        Animated.parallel([
-          Animated.timing(fadeAnim, {
-            toValue: 1,
-            duration: ANIMATION_DURATION,
-            useNativeDriver: true,
-          }),
-          Animated.timing(slideAnim, {
-            toValue: 0,
-            duration: ANIMATION_DURATION,
-            useNativeDriver: true,
-          }),
-        ]).start();
+        {/* Expanded Content - Milestones */}
+        <Animated.View 
+          style={[
+            styles.expandedContent,
+            {
+              maxHeight: expandAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 400],
+              }),
+              opacity: expandAnim,
+            }
+          ]}
+        >
+          <View style={styles.divider} />
+          
+          <View style={styles.milestonesHeader}>
+            <Text style={styles.milestonesTitle}>✦ Milestones</Text>
+            {totalMilestones > 0 && (
+              <Text style={styles.milestonesCount}>
+                {completedMilestones}/{totalMilestones}
+              </Text>
+            )}
+          </View>
+          
+          {goal.milestones?.length === 0 ? (
+            <View style={styles.emptyMilestones}>
+              <Ionicons name="flag-outline" size={32} color={COLORS.textTertiary} />
+              <Text style={styles.emptyMilestonesText}>
+                No milestones yet
+              </Text>
+              {/* ✅ FIXED: Check if user is owner by comparing user_id */}
+              {goal.isOwner && (
+                <>
+                  <View style={styles.tapHintContainer}>
+                    <Ionicons name="hand-left-outline" size={14} color={COLORS.accentBlush} />
+                    <Text style={styles.tapHintText}>
+                      Tap the goal card to expand it, then add milestones
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.addMilestoneButton}
+                    onPress={() => onAddMilestone(goal.id)}
+                  >
+                    <Ionicons name="add-circle" size={20} color={COLORS.accentBlush} />
+                    <Text style={styles.addMilestoneText}>Add first milestone</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {!goal.isOwner && (
+                <Text style={styles.noMilestonesHint}>
+                  Owner hasn't added any milestones yet
+                </Text>
+              )}
+            </View>
+          ) : (
+            <>
+              <View style={styles.milestonesList}>
+                {goal.milestones.map((milestone, idx) => (
+                  <View key={milestone.id || idx} style={styles.milestoneItem}>
+                    <TouchableOpacity
+                      style={styles.milestoneCheckbox}
+                      onPress={() => onToggleMilestone(goal.id, idx)}
+                      disabled={!goal.isOwner}
+                    >
+                      <Ionicons
+                        name={milestone.completed ? "checkmark-circle" : "ellipse-outline"}
+                        size={20}
+                        color={milestone.completed ? COLORS.success : COLORS.textTertiary}
+                      />
+                    </TouchableOpacity>
+                    <View style={styles.milestoneContent}>
+                      <Text style={[
+                        styles.milestoneTitle,
+                        milestone.completed && styles.milestoneTitleCompleted
+                      ]}>
+                        {milestone.title}
+                      </Text>
+                      {milestone.dueDate && (
+                        <Text style={styles.milestoneDueDate}>
+                          {new Date(milestone.dueDate).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric'
+                          })}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ))}
+              </View>
+              
+              {/* Add more milestone button */}
+              {goal.isOwner && (
+                <TouchableOpacity
+                  style={styles.addMoreMilestoneButton}
+                  onPress={() => onAddMilestone(goal.id)}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color={COLORS.accentBlush} />
+                  <Text style={styles.addMoreMilestoneText}>Add milestone</Text>
+                </TouchableOpacity>
+              )}
+            </>
+          )}
+        </Animated.View>
+        
+        {/* Action Bar: expand hint + action buttons */}
+        <View style={styles.goalActions}>
+          {/* Left: expand/collapse chevron with milestone hint */}
+          <TouchableOpacity
+            style={styles.expandHintBtn}
+            onPress={() => onExpand(goal.id)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Animated.View style={{
+              transform: [{
+                rotate: expandAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0deg', '180deg'],
+                })
+              }]
+            }}>
+              <Ionicons name="chevron-down" size={18} color={COLORS.accentBlush} />
+            </Animated.View>
+            <Text style={styles.expandHintText}>
+              {isExpanded ? 'Hide milestones' : `Milestones${totalMilestones > 0 ? ` · ${completedMilestones}/${totalMilestones}` : ''}`}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Right: edit / share / delete */}
+          <View style={styles.goalActionButtons}>
+            {goal.isOwner && (
+              <>
+                <TouchableOpacity
+                  onPress={() => onEdit(goal)}
+                  style={styles.actionButton}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="create-outline" size={19} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => onShare(goal)}
+                  style={styles.actionButton}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="share-social-outline" size={19} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+              </>
+            )}
+
+            <TouchableOpacity
+              onPress={() => onDelete(goal)}
+              style={styles.actionButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons
+                name={goal.isOwner ? "trash-outline" : "close-outline"}
+                size={19}
+                color={goal.isOwner ? COLORS.danger : COLORS.textSecondary}
+              />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </BlurView>
+    </Animated.View>
+  );
+};
+
+/* ================================================================================
+   📊 STATS CARD - Analytics overview with purple theme
+   ================================================================================ */
+
+const StatsCard = ({ stats }) => {
+  return (
+    <View style={styles.statsCard}>
+      <LinearGradient
+        colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+        style={StyleSheet.absoluteFill}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      />
+      
+      <View style={styles.statsGrid}>
+        <View style={styles.statItem}>
+          <Text style={styles.statNumber}>{stats.total}</Text>
+          <Text style={styles.statLabel}>Total</Text>
+        </View>
+        
+        <View style={styles.statDivider} />
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, { color: COLORS.success }]}>{stats.completed}</Text>
+          <Text style={styles.statLabel}>Completed</Text>
+        </View>
+        
+        <View style={styles.statDivider} />
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, { color: COLORS.accentWarm }]}>{stats.active}</Text>
+          <Text style={styles.statLabel}>Active</Text>
+        </View>
+        
+        <View style={styles.statDivider} />
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, { color: COLORS.danger }]}>{stats.overdue}</Text>
+          <Text style={styles.statLabel}>Overdue</Text>
+        </View>
+      </View>
+      
+      <View style={styles.progressBarContainer}>
+        <View style={styles.progressBarBackground}>
+          <View 
+            style={[
+              styles.progressBarFill,
+              { width: `${stats.completionRate}%` }
+            ]} 
+          />
+        </View>
+        <Text style={styles.progressBarText}>
+          {stats.completionRate}% completion rate
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+/* ================================================================================
+   📅 MINI CALENDAR - Goal due dates with purple theme
+   ================================================================================ */
+
+const MiniCalendar = ({ goals, selectedDate, onSelectDate }) => {
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  
+  const daysInMonth = new Date(
+    currentMonth.getFullYear(),
+    currentMonth.getMonth() + 1,
+    0
+  ).getDate();
+  
+  const firstDay = new Date(
+    currentMonth.getFullYear(),
+    currentMonth.getMonth(),
+    1
+  ).getDay();
+  
+  const monthName = currentMonth.toLocaleString('default', { 
+    month: 'long', 
+    year: 'numeric' 
+  });
+
+  const goalDates = useMemo(() => {
+    const dates = {};
+    goals.forEach(goal => {
+      // ✅ FIXED: Handle both dueDate and due_date
+      const dueDate = goal.dueDate ? new Date(goal.dueDate) : 
+                     goal.due_date ? new Date(goal.due_date) : null;
+      if (dueDate && goal.progress < 100) {
+        const key = dueDate.toDateString();
+        dates[key] = (dates[key] || 0) + 1;
       }
     });
-    
-    const totalSteps = 4;
-    if (isMounted.current) {
-      setFormProgress((newStep / totalSteps) * 100);
+    return dates;
+  }, [goals]);
+
+  return (
+    <View style={styles.calendarContainer}>
+      <View style={styles.calendarHeader}>
+        <TouchableOpacity
+          onPress={() => {
+            setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+          style={styles.calendarNav}
+        >
+          <Ionicons name="chevron-back" size={20} color={COLORS.textPrimary} />
+        </TouchableOpacity>
+        
+        <Text style={styles.calendarMonth}>{monthName}</Text>
+        
+        <TouchableOpacity
+          onPress={() => {
+            setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+          style={styles.calendarNav}
+        >
+          <Ionicons name="chevron-forward" size={20} color={COLORS.textPrimary} />
+        </TouchableOpacity>
+      </View>
+      
+      <View style={styles.weekdayRow}>
+        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
+          <Text key={i} style={styles.weekdayText}>{day}</Text>
+        ))}
+      </View>
+      
+      <View style={styles.daysGrid}>
+        {Array.from({ length: firstDay }).map((_, i) => (
+          <View key={`empty-${i}`} style={styles.dayCell} />
+        ))}
+        
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const day = i + 1;
+          const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+          const isSelected = selectedDate?.toDateString() === date.toDateString();
+          const isToday = date.toDateString() === new Date().toDateString();
+          const goalCount = goalDates[date.toDateString()] || 0;
+          
+          return (
+            <TouchableOpacity
+              key={day}
+              style={[
+                styles.dayCell,
+                isSelected && styles.dayCellSelected,
+                isToday && styles.dayCellToday,
+              ]}
+              onPress={() => {
+                onSelectDate(date);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+            >
+              <Text
+                style={[
+                  styles.dayText,
+                  isSelected && styles.dayTextSelected,
+                  isToday && styles.dayTextToday,
+                ]}
+              >
+                {day}
+              </Text>
+              {goalCount > 0 && (
+                <View style={styles.dayDot}>
+                  <Text style={styles.dayDotText}>{goalCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+};
+
+/* ================================================================================
+   🎯 QUICK ADD BAR - Intelligent input with purple theme
+   ================================================================================ */
+
+const QuickAddBar = ({ onAdd }) => {
+  const [text, setText] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(scaleAnim, {
+      toValue: isFocused ? 1.02 : 1,
+      useNativeDriver: true,
+      friction: 8,
+    }).start();
+  }, [isFocused]);
+
+  const handleSubmit = () => {
+    if (text.trim()) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      onAdd({
+        title: text.trim(),
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+      });
+      setText("");
     }
-  }, [formStep, fadeAnim, slideAnim]);
+  };
 
-  // --- Goals State ---
+  return (
+    <Animated.View style={[styles.quickAddContainer, { transform: [{ scale: scaleAnim }] }]}>
+      <BlurView intensity={90} tint="light" style={styles.quickAddBlur}>
+        <View style={styles.quickAddInner}>
+          <Ionicons name="flag-outline" size={24} color={COLORS.accentBlush} />
+          
+          <TextInput
+            style={styles.quickAddInput}
+            placeholder="Quick add goal..."
+            placeholderTextColor={COLORS.textTertiary}
+            value={text}
+            onChangeText={setText}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            onSubmitEditing={handleSubmit}
+            returnKeyType="done"
+          />
+          
+          {text.length > 0 && (
+            <TouchableOpacity onPress={handleSubmit} style={styles.quickAddSubmit}>
+              <LinearGradient
+                colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                style={styles.quickAddSubmitGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+              >
+                <Ionicons name="arrow-forward" size={20} color="white" />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
+        </View>
+      </BlurView>
+    </Animated.View>
+  );
+};
+
+/* ================================================================================
+   🏆 MAIN GOALS SCREEN - Complete redesign with purple theme
+   ================================================================================ */
+
+export default function GoalsScreen() {
+  const navigation = useNavigation();
+  const { user } = useApp();
+  
+  // State
   const [goals, setGoals] = useState([]);
-  const ownedGoalsCache = useRef([]);
-  const sharedMetadataCache = useRef([]);
-
-  // --- Filtering & Sorting ---
-  const [filterCategory, setFilterCategory] = useState("all");
-  const [filterPriority, setFilterPriority] = useState("all");
-  const [sortBy, setSortBy] = useState("dueDate");
-  const [showCompleted, setShowCompleted] = useState(true);
+  const [filteredGoals, setFilteredGoals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isFormVisible, setIsFormVisible] = useState(false);
+  const [isShareModalVisible, setIsShareModalVisible] = useState(false);
+  const [selectedGoal, setSelectedGoal] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-
-  // --- Modals & Loading ---
-  const [loading, setLoading] = useState(false);
-  const [showModal, setShowModal] = useState(false);
-  const [modalMessage, setModalMessage] = useState("");
-  const [showFiltersModal, setShowFiltersModal] = useState(false);
-
-  // --- Milestones ---
-  const [newMilestoneTitle, setNewMilestoneTitle] = useState("");
-  const [newMilestoneDueDate, setNewMilestoneDueDate] = useState(new Date());
-  const [showMilestoneDatePicker, setShowMilestoneDatePicker] = useState(false);
   const [expandedGoalId, setExpandedGoalId] = useState(null);
-  const [goalMilestones, setGoalMilestones] = useState([]);
-
-  // --- Share Modal State ---
-  const [shareModalVisible, setShareModalVisible] = useState(false);
-  const [shareGoal, setShareGoal] = useState(null);
+  const [notificationPermission, setNotificationPermission] = useState(false);
+  const [viewMode, setViewMode] = useState("list"); // list, calendar, analytics
+  
+  // Share modal state
   const [shareEmail, setShareEmail] = useState("");
   const [shareCollaborators, setShareCollaborators] = useState([]);
   const [shareEmailError, setShareEmailError] = useState("");
-
-  // --- Notifications State ---
-  const [notifications, setNotifications] = useState([]);
-  const notificationsUnsub = useRef(null);
-
-  // --- NEW ENHANCEMENT STATES ---
-  const [archivedGoals, setArchivedGoals] = useState([]);
-  const [goalTemplates, setGoalTemplates] = useState([]);
-  const [showArchived, setShowArchived] = useState(false);
-  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState(null);
-  const [isRecurring, setIsRecurring] = useState(false);
-  const [recurrenceType, setRecurrenceType] = useState('none');
-  const [recurrenceInterval, setRecurrenceInterval] = useState(1);
-  const [timeTracking, setTimeTracking] = useState({});
-  const [activeTimer, setActiveTimer] = useState(null);
-  const [analyticsView, setAnalyticsView] = useState('list');
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [estimatedHours, setEstimatedHours] = useState("");
-
-  // --- Statistics ---
+  
+  // Form state
+  const [formState, formDispatch] = useReducer(goalsReducer, initialState);
+  
+  // Picker states
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showNotifPicker, setShowNotifPicker] = useState(false);
+  const [notifPickerMode, setNotifPickerMode] = useState('date');
+  const [tempNotifDate, setTempNotifDate] = useState(new Date());
+  const [showMilestoneInput, setShowMilestoneInput] = useState(false);
+  const [milestoneTitle, setMilestoneTitle] = useState("");
+  const [milestoneDueDate, setMilestoneDueDate] = useState(new Date());
+  const [showMilestoneDatePicker, setShowMilestoneDatePicker] = useState(false);
+  
+  // Tag input
+  const [tagInput, setTagInput] = useState("");
+  
+  // Stats
   const [stats, setStats] = useState({
     total: 0,
     completed: 0,
-    inProgress: 0,
+    active: 0,
     overdue: 0,
-    archived: 0,
-    avgProgress: 0,
-    totalTimeSpent: 0,
-    categoryStats: {},
+    completionRate: 0,
   });
 
-  // Safe message display with mount check
-  const showMessage = useCallback((message) => {
-    if (!isMounted.current) return;
-    setModalMessage(message);
-    setShowModal(true);
-    setTimeout(() => {
-      if (isMounted.current) setShowModal(false);
-    }, ANIMATION_DURATION);
+  const isMounted = useRef(true);
+  const scrollY = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
   }, []);
 
-  // --- Helper function: getSharedCollaborators ---
-  const getSharedCollaborators = useCallback(async (goalId) => {
-    try {
-      const sharedRef = collection(db, getSharedGoalsCollectionPath(appId));
-      const q = query(sharedRef, where("originalGoalId", "==", goalId));
-      const snap = await getDocs(q);
-      if (snap.empty) return [];
-      return (snap.docs[0].data().collaborators || []).filter((uid) => uid !== user?.uid);
-    } catch (error) {
-      console.error("Error getting shared collaborators:", error);
-      return [];
-    }
-  }, [appId, user?.uid]);
+  /* ================================================================================
+     🔔 NOTIFICATION SETUP
+     ================================================================================ */
 
-  // Input validation helper
-  const validateGoalInput = () => {
-    if (!goalTitle.trim()) {
-      showMessage("Please enter a goal title");
-      return false;
-    }
-    
-    if (goalTitle.trim().length > MAX_TITLE_LENGTH) {
-      showMessage(`Title must be ${MAX_TITLE_LENGTH} characters or less`);
-      return false;
-    }
-    
-    if (goalDescription && goalDescription.length > MAX_DESCRIPTION_LENGTH) {
-      showMessage(`Description must be ${MAX_DESCRIPTION_LENGTH} characters or less`);
-      return false;
-    }
-    
-    if (tags.length > MAX_TAGS) {
-      showMessage(`Maximum ${MAX_TAGS} tags allowed`);
-      return false;
-    }
-    
-    if (goalMilestones.length > MAX_MILESTONES) {
-      showMessage(`Maximum ${MAX_MILESTONES} milestones allowed`);
-      return false;
-    }
-    
-    return true;
-  };
-
-  // Helper function to calculate next due date with limits
-  const calculateNextDueDate = (currentDate, recurrence) => {
-    const date = new Date(currentDate);
-    
-    switch (recurrence.type) {
-      case 'daily':
-        date.setDate(date.getDate() + recurrence.interval);
-        break;
-      case 'weekly':
-        date.setDate(date.getDate() + (recurrence.interval * 7));
-        break;
-      case 'monthly':
-        date.setMonth(date.getMonth() + recurrence.interval);
-        break;
-      case 'yearly':
-        date.setFullYear(date.getFullYear() + recurrence.interval);
-        break;
-      default:
-        return null;
-    }
-    
-    // Limit to max 1 year in future for recurring goals
-    const maxDate = new Date();
-    maxDate.setFullYear(maxDate.getFullYear() + 1);
-    return date > maxDate ? null : date;
-  };
-
-  // --- SINGLE NOTIFICATION SETUP (RUN ONCE) ---
   useEffect(() => {
     const setupNotifications = async () => {
-      if (!isMounted.current) return;
+      const hasPermission = await hasNotificationPermissions();
+      setNotificationPermission(hasPermission);
       
-      await requestNotificationPermissions();
-      configureNotificationHandler();
-      
-      if (Platform.OS === 'android') {
-        try {
-          await Notifications.setNotificationChannelAsync('goals', {
-            name: 'Goals',
-            importance: Notifications.AndroidImportance.HIGH,
-            vibrationPattern: [0, 250, 250, 250],
-            lightColor: '#4CAF50',
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-            bypassDnd: false,
-            showBadge: true,
-            enableVibrate: true,
-            enableLights: true,
-          });
-          
-          await Notifications.setNotificationChannelAsync('collaboration', {
-            name: 'Collaboration',
-            importance: Notifications.AndroidImportance.HIGH,
-            vibrationPattern: [0, 250, 100, 250],
-            lightColor: '#9C27B0',
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-            bypassDnd: false,
-            showBadge: true,
-            enableVibrate: true,
-            enableLights: true,
-          });
-        } catch (error) {
-          console.error("Error setting up notification channels:", error);
-        }
+      if (!hasPermission) {
+        const granted = await requestNotificationPermissions();
+        setNotificationPermission(granted);
       }
     };
     
     setupNotifications();
-    
-    const subscription = Notifications.addNotificationReceivedListener(notification => {
-      triggerHaptic('light');
-    });
-    
-    const responseSubscription = Notifications.addNotificationResponseReceivedListener(response => {
-      const { goalId, type, screen } = response.notification.request.content.data || {};
-      
-      if (goalId && screen === "Goals") {
-        const goal = goals.find(g => g.id === goalId);
-        if (goal) {
-          setExpandedGoalId(goalId);
-          showMessage(`Opening ${type?.includes('milestone') ? 'milestone' : 'goal'}...`);
-        }
-      }
-    });
-    
-    return () => {
-      subscription.remove();
-      responseSubscription.remove();
-    };
-  }, []); // EMPTY DEPENDENCY - RUN ONCE
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      isMounted.current = false;
-      if (notificationsUnsub.current) {
-        try {
-          notificationsUnsub.current();
-        } catch (error) {
-          console.error("Error unsubscribing from notifications:", error);
-        }
-      }
-    };
   }, []);
 
-  // --- OFFLINE FIRST: LOAD CACHE ---
+  /* ================================================================================
+     🔥 SUPABASE LISTENER
+     ================================================================================ */
+
   useEffect(() => {
-    const loadCachedGoals = async () => {
-      if (!user?.uid) return;
+    if (!user) {
+      setGoals([]);
+      setLoading(false);
+      return;
+    }
+
+    const processGoals = (data) => {
+      const goalList = (data || []).map(row => {
+        const milestones = Array.isArray(row.milestones) ? row.milestones : [];
+        const completedMs = milestones.filter(m => m.completed).length;
+        const progress = milestones.length ? Math.round((completedMs / milestones.length) * 100) : 0;
+        const dueDate = row.due_date ? new Date(row.due_date) : new Date();
+        const daysRemaining = Math.ceil((dueDate - new Date()) / (1000 * 60 * 60 * 24));
+        
+        return {
+          ...row,
+          dueDate: dueDate,
+          due_date: row.due_date,
+          notificationTime: row.notification_time ? new Date(row.notification_time) : null,
+          notification_time: row.notification_time,
+          milestones,
+          progress,
+          daysRemaining,
+          // ✅ FIXED: Check if user is owner
+          isOwner: row.user_id === user.id,
+        };
+      });
       
-      try {
-        const cacheKey = `goals_cache_${user.uid}_${CACHE_VERSION}`;
-        const cached = await AsyncStorage.getItem(cacheKey);
-        if (cached) {
-          let parsed = [];
-          try {
-            parsed = JSON.parse(cached);
-            if (!Array.isArray(parsed)) throw new Error('Invalid cache format');
-          } catch (error) {
-            console.error("Corrupt cache, clearing...", error);
-            await AsyncStorage.removeItem(cacheKey);
-            return;
-          }
-          
-          const hydrated = parsed.map(g => {
-            try {
-              return {
-                ...g,
-                dueDate: g.dueDate ? createSafeDate(g.dueDate) : new Date(),
-                milestones: (g.milestones || []).map(m => ({
-                  ...m,
-                  createdAt: m.createdAt ? new Date(m.createdAt) : new Date(),
-                  dueDate: m.dueDate ? new Date(m.dueDate) : null
-                }))
-              };
-            } catch (e) {
-              console.error("Error hydrating goal:", e, g);
-              return null;
-            }
-          }).filter(g => g !== null);
-          
-          if (isMounted.current) {
-            setGoals(hydrated);
-          }
-        }
-      } catch (e) {
-        console.error("Failed to load cached goals", e);
+      // Sort goals: active first (by due date), then completed
+      goalList.sort((a, b) => {
+        if (a.progress === 100 && b.progress < 100) return 1;
+        if (b.progress === 100 && a.progress < 100) return -1;
+        return new Date(a.dueDate || 0) - new Date(b.dueDate || 0);
+      });
+      
+      if (isMounted.current) {
+        setGoals(goalList);
+        setLoading(false);
+        
+        // Calculate stats
+        const total = goalList.length;
+        const completed = goalList.filter(g => g.progress === 100).length;
+        const active = goalList.filter(g => g.progress > 0 && g.progress < 100).length;
+        const overdue = goalList.filter(g => g.daysRemaining < 0 && g.progress < 100).length;
+        setStats({ 
+          total, 
+          completed, 
+          active, 
+          overdue, 
+          completionRate: total > 0 ? Math.round((completed / total) * 100) : 0 
+        });
       }
     };
-    
-    if (user) loadCachedGoals();
+
+    // Initial fetch
+    supabase.from("goals").select("*").eq("user_id", user.id)
+      .then(({ data, error }) => {
+        if (error) { 
+          console.error("Goals fetch error:", error); 
+          setLoading(false); 
+          return; 
+        }
+        processGoals(data);
+      });
+
+    // Real-time subscription
+    const channel = supabase.channel(`goals-${user.id}`)
+      .on("postgres_changes", { 
+        event: "*", 
+        schema: "public", 
+        table: "goals", 
+        filter: `user_id=eq.${user.id}` 
+      }, () => {
+        supabase.from("goals").select("*").eq("user_id", user.id)
+          .then(({ data }) => processGoals(data || []));
+      })
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
   }, [user]);
 
-  // --- CALCULATE STATISTICS ---
+  /* ================================================================================
+     🔍 FILTERING & SEARCH
+     ================================================================================ */
+
   useEffect(() => {
-    if (!isMounted.current) return;
-    
-    const total = goals.length;
-    const completed = goals.filter(g => g.progress === 100).length;
-    const inProgress = goals.filter(g => g.progress > 0 && g.progress < 100).length;
-    const overdue = goals.filter(g => g.daysRemaining < 0 && g.progress < 100).length;
-    const archivedCount = goals.filter(g => g.archived).length;
-    
-    const avgProgress = goals.length > 0 
-      ? Math.round(goals.reduce((sum, g) => sum + g.progress, 0) / goals.length)
-      : 0;
-    
-    const totalTimeSpent = goals.reduce((sum, g) => sum + (g.totalTimeSpent || 0), 0);
-    
-    const categoryStats = {};
-    goals.forEach(g => {
-      if (!categoryStats[g.category]) {
-        categoryStats[g.category] = { total: 0, completed: 0 };
-      }
-      categoryStats[g.category].total++;
-      if (g.progress === 100) categoryStats[g.category].completed++;
-    });
-
-    if (isMounted.current) {
-      setStats({ 
-        total, 
-        completed, 
-        inProgress, 
-        overdue,
-        archived: archivedCount,
-        avgProgress,
-        totalTimeSpent: Math.floor(totalTimeSpent / 3600),
-        categoryStats
-      });
-    }
-  }, [goals]);
-
-  // --- NOTIFICATIONS LISTENER ---
-  useEffect(() => {
-    if (!user?.uid) return;
-
-    // Try with orderBy, fallback to unordered if index missing
-    const setupNotificationListener = async () => {
-      try {
-        const q = query(
-          collection(db, "notifications"),
-          where("toUid", "==", user.uid),
-          orderBy("createdAt", "desc")
-        );
-
-        const unsub = onSnapshot(q, (snap) => {
-          if (!isMounted.current) return;
-          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-          setNotifications(list);
-        });
-
-        notificationsUnsub.current = unsub;
-      } catch (error) {
-        console.error("Ordered notification query failed, falling back to unordered:", error);
-        // Fallback to unordered query
-        const q = query(
-          collection(db, "notifications"),
-          where("toUid", "==", user.uid)
-        );
-
-        const unsub = onSnapshot(q, (snap) => {
-          if (!isMounted.current) return;
-          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => 
-            new Date(b.createdAt?.toDate?.() || b.createdAt || 0) - 
-            new Date(a.createdAt?.toDate?.() || a.createdAt || 0)
-          );
-          setNotifications(list);
-        });
-
-        notificationsUnsub.current = unsub;
-      }
-    };
-
-    setupNotificationListener();
-    
-    return () => {
-      if (notificationsUnsub.current) {
-        notificationsUnsub.current();
-      }
-    };
-  }, [user]);
-
-  // --- SHOW TOAST FOR UNREAD NOTIFICATIONS ---
-  useEffect(() => {
-    if (!isMounted.current) return;
-    
-    const unread = notifications.filter((n) => !n.read);
-    const newUnread = unread.filter(notif => 
-      !notificationsProcessed.current.includes(notif.id)
-    );
-    
-    newUnread.forEach((notif) => {
-      showMessage(notif.message || "New notification");
-      // DO NOT auto-mark as read - let user tap to mark as read
-      notificationsProcessed.current = [...notificationsProcessed.current, notif.id];
-      if (notificationsProcessed.current.length > 100) {
-        notificationsProcessed.current = notificationsProcessed.current.slice(-100);
-      }
-    });
-    
-    // Clean up old IDs to prevent memory growth
-    if (notificationsProcessed.current.length > 100) {
-      notificationsProcessed.current = notificationsProcessed.current.slice(-50);
-    }
-    
-    // Also clean up IDs that no longer exist in notifications
-    notificationsProcessed.current = notificationsProcessed.current.filter(id =>
-      notifications.some(n => n.id === id)
-    );
-  }, [notifications, showMessage]);
-
-  // --- GOAL FETCHING AND MERGING ---
-  useEffect(() => {
-    if (!user?.uid) return;
-    
-    let isMountedLocal = true;
-    let allUnsubs = [];
-    const ownedGoalsRef = collection(db, "goals");
-    const sharedGoalsRef = collection(db, getSharedGoalsCollectionPath(appId));
-
-    const mergeAndSetGoals = async (owned, sharedMetadata) => {
-      if (!isMountedLocal) return;
-      
-      let combinedGoals = [...owned.map((g) => docToGoal(g, true))];
-      const ownedIds = new Set(owned.map((g) => g.id));
-
-      const sharedPromises = sharedMetadata.map(async (sharedDoc) => {
-        if (ownedIds.has(sharedDoc.originalGoalId)) return null;
-        const originalGoalRef = doc(db, "goals", sharedDoc.originalGoalId);
-        try {
-          const originalGoalSnap = await getDoc(originalGoalRef);
-          if (originalGoalSnap.exists()) {
-            return docToGoal(
-              originalGoalSnap,
-              false,
-              sharedDoc.id,
-              sharedDoc.ownerId
-            );
-          }
-        } catch (error) {
-          console.error("Error fetching shared goal:", error);
-        }
-        return null;
-      });
-
-      const fetchedSharedGoals = (await Promise.all(sharedPromises)).filter((g) => g !== null);
-      combinedGoals = [...combinedGoals, ...fetchedSharedGoals];
-
-      if (isMountedLocal) {
-        // Use merge instead of replace to preserve local state
-        setGoals(prev => mergeGoalsById(prev, combinedGoals));
-
-        // OFFLINE FIRST: SAVE TO CACHE
-        try {
-          const cacheKey = `goals_cache_${user.uid}_${CACHE_VERSION}`;
-          await AsyncStorage.setItem(cacheKey, JSON.stringify(combinedGoals));
-        } catch (e) {
-          console.error("Error caching goals", e);
-        }
-      }
-    };
-
-    const ownedQuery = query(ownedGoalsRef, where("userId", "==", user.uid));
-    const unsubscribeOwned = onSnapshot(ownedQuery, async (snapshot) => {
-      if (!isMountedLocal) return;
-      ownedGoalsCache.current = snapshot.docs;
-      await mergeAndSetGoals(ownedGoalsCache.current, sharedMetadataCache.current);
-    });
-    allUnsubs = [...allUnsubs, unsubscribeOwned];
-
-    // Try with orderBy, fallback to unordered if index missing
-    const setupSharedListener = async () => {
-      try {
-        const sharedQuery = query(
-          sharedGoalsRef, 
-          where("collaborators", "array-contains", user.uid),
-          orderBy("sharedAt", "desc")
-        );
-        
-        const unsubscribeShared = onSnapshot(sharedQuery, async (snapshot) => {
-          if (!isMountedLocal) return;
-          sharedMetadataCache.current = snapshot.docs.map((d) => ({
-            id: d.id,
-            originalGoalId: d.data().originalGoalId,
-            ownerId: d.data().ownerId,
-          }));
-          await mergeAndSetGoals(ownedGoalsCache.current, sharedMetadataCache.current);
-        });
-        allUnsubs = [...allUnsubs, unsubscribeShared];
-      } catch (error) {
-        console.error("Ordered shared query failed, falling back to unordered:", error);
-        // Fallback to unordered query
-        const sharedQuery = query(
-          sharedGoalsRef, 
-          where("collaborators", "array-contains", user.uid)
-        );
-        
-        const unsubscribeShared = onSnapshot(sharedQuery, async (snapshot) => {
-          if (!isMountedLocal) return;
-          sharedMetadataCache.current = snapshot.docs.map((d) => ({
-            id: d.id,
-            originalGoalId: d.data().originalGoalId,
-            ownerId: d.data().ownerId,
-          }));
-          await mergeAndSetGoals(ownedGoalsCache.current, sharedMetadataCache.current);
-        });
-        allUnsubs = [...allUnsubs, unsubscribeShared];
-      }
-    };
-
-    setupSharedListener();
-
-    return () => {
-      isMountedLocal = false;
-      allUnsubs.forEach((unsub) => {
-        try {
-          unsub();
-        } catch (error) {
-          console.error("Error unsubscribing from Firestore:", error);
-        }
-      });
-    };
-  }, [user, appId]);
-
-  // --- FILTER AND SORT GOALS (with useMemo for performance) ---
-  const filteredGoals = useMemo(() => {
     let filtered = [...goals];
-
-    // FIX: Deduplicate goals by ID to prevent duplicate key errors
-    const seenIds = new Set();
-    filtered = filtered.filter(g => {
-      if (seenIds.has(g.id)) {
-        console.warn(`Duplicate goal ID detected and removed: ${g.id}`);
-        return false;
-      }
-      seenIds.add(g.id);
-      return true;
-    });
-
-    // Filter archived goals
-    if (!showArchived) {
-      filtered = filtered.filter(g => !g.archived);
-    } else {
-      filtered = filtered.filter(g => g.archived);
+    
+    if (selectedDate) {
+      filtered = filtered.filter(g => {
+        const date = new Date(g.dueDate);
+        return date.toDateString() === selectedDate.toDateString();
+      });
     }
-
-    // Filter by search query
-    if (searchQuery.trim()) {
+    
+    if (selectedCategory !== "all") {
+      filtered = filtered.filter(g => g.category === selectedCategory);
+    }
+    
+    if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(g => 
-        (g.title || "").toLowerCase().includes(query) ||
-        (g.description || "").toLowerCase().includes(query) ||
-        (g.tags || []).some(tag => tag.toLowerCase().includes(query))
+        g.title?.toLowerCase().includes(query) ||
+        g.description?.toLowerCase().includes(query) ||
+        g.tags?.some(tag => tag.toLowerCase().includes(query))
       );
     }
-
-    // Filter by category
-    if (filterCategory !== "all") {
-      filtered = filtered.filter(g => g.category === filterCategory);
-    }
-
-    // Filter by priority
-    if (filterPriority !== "all") {
-      filtered = filtered.filter(g => g.priority === filterPriority);
-    }
-
-    // Filter completed
-    if (!showCompleted) {
-      filtered = filtered.filter(g => g.progress < 100);
-    }
-
-    // Sort
-    filtered.sort((a, b) => {
-      switch (sortBy) {
-        case "priority":
-          const priorityOrder = { high: 0, medium: 1, low: 2 };
-          return (priorityOrder[a.priority] || 1) - (priorityOrder[b.priority] || 1);
-        case "progress":
-          return (b.progress || 0) - (a.progress || 0);
-        case "title":
-          return (a.title || "").localeCompare(b.title || "");
-        case "dueDate":
-        default:
-          if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
-          return new Date(a.dueDate || 0) - new Date(b.dueDate || 0);
-      }
-    });
-
-    return filtered;
-  }, [goals, filterCategory, filterPriority, sortBy, showCompleted, searchQuery, showArchived]);
-
-  // --- DATE PICKER ---
-  const handleDateChange = (event, date) => {
-    setShowDatePicker(false);
-    if (event?.type === "set" && date) {
-      setSelectedDate(date);
-      
-      // Auto-adjust notification time if it's now after the new due date
-      if (enableNotifications && notificationTime >= date) {
-        const newNotifTime = new Date(date.getTime() - DEFAULT_REMINDER_OFFSET);
-        setNotificationTime(newNotifTime);
-        setTempNotificationTime(newNotifTime);
-        showMessage("Reminder time adjusted to 30 minutes before new due date");
-      }
-    }
-  };
-
-  const handleMilestoneDateChange = (event, date) => {
-    setShowMilestoneDatePicker(false);
-    if (event?.type === "set" && date) setNewMilestoneDueDate(date);
-  };
-
-  const handleNotificationTimeChange = (event, date) => {
-    if (Platform.OS === 'android') {
-      setShowNotificationTimePicker(false);
-    }
     
-    if (event?.type === "set" && date) {
-      if (notificationTimeMode === 'date') {
-        setTempNotificationTime(date);
-        if (Platform.OS === 'android') {
-          setNotificationTimeMode('time');
-          setShowNotificationTimePicker(true);
-        }
-      } else {
-        const combinedDateTime = new Date(tempNotificationTime);
-        combinedDateTime.setHours(date.getHours());
-        combinedDateTime.setMinutes(date.getMinutes());
-        combinedDateTime.setSeconds(0);
-        
-        // Validate: notification time must be before due date
-        if (combinedDateTime >= selectedDate) {
-          showMessage("Reminder time must be before the due date");
-          return;
-        }
-        
-        setNotificationTime(combinedDateTime);
-        setNotificationTimeMode('date');
-        if (Platform.OS === 'ios') {
-          setShowNotificationTimePicker(false);
-        }
-      }
-    } else if (event?.type === "dismissed") {
-      setNotificationTimeMode('date');
-      if (Platform.OS === 'ios') {
-        setShowNotificationTimePicker(false);
-      }
-    }
-  };
+    setFilteredGoals(filtered);
+  }, [goals, selectedDate, selectedCategory, searchQuery]);
 
-  // --- OPEN CREATE/EDIT MODAL ---
-  const openGoalModal = (goal = null) => {
-    if (goal && !goal.isOwner) {
-      showMessage("Only the owner can edit this goal.");
-      return;
-    }
+  /* ================================================================================
+     🎯 GOAL OPERATIONS
+     ================================================================================ */
 
-    triggerHaptic("light");
-    setIsEditing(!!goal);
-    setCurrentGoal(goal);
-    setGoalTitle(goal?.title || "");
-    setGoalDescription(goal?.description || "");
-    setSelectedDate(goal?.dueDate ? createSafeDate(goal.dueDate) : new Date());
-    setSelectedPriority(goal?.priority || "medium");
-    setSelectedCategory(goal?.category || "personal");
-    setTags(Array.isArray(goal?.tags) ? goal.tags : []);
-    setGoalMilestones(Array.isArray(goal?.milestones) ? goal.milestones : []);
-    setIsRecurring(goal?.recurrence?.type !== 'none' || false);
-    setRecurrenceType(goal?.recurrence?.type || 'none');
-    setRecurrenceInterval(goal?.recurrence?.interval || 1);
-    setEstimatedHours(goal?.estimatedTime ? Math.floor(goal.estimatedTime / 3600).toString() : "");
-    setEnableNotifications(goal?.enableNotifications !== false);
-    
-    // Set notification time with validation
-    const defaultNotifTime = goal?.notificationTime || new Date((goal?.dueDate || new Date()).getTime() - DEFAULT_REMINDER_OFFSET);
-    const now = new Date();
-    const dueDate = goal?.dueDate ? createSafeDate(goal.dueDate) : new Date();
-    let finalNotifTime = new Date(defaultNotifTime);
-    
-    if (finalNotifTime >= dueDate) {
-      finalNotifTime = new Date(dueDate.getTime() - 60 * MINUTE);
-    }
-    if (finalNotifTime <= now) {
-      finalNotifTime = new Date(now.getTime() + DEFAULT_REMINDER_OFFSET);
-      if (finalNotifTime >= dueDate) {
-        finalNotifTime = new Date(dueDate.getTime() - 5 * MINUTE);
-      }
-    }
-    
-    setNotificationTime(finalNotifTime);
-    setTempNotificationTime(finalNotifTime);
-    setCustomNotificationMessage(goal?.customNotificationMessage || "");
-    setSyncToCalendar(Boolean(goal?.syncToCalendar));
-    setIsFormModalVisible(true);
-    setFormStep(1);
-    setFormProgress(25);
-  };
+  const showMessage = useCallback((message) => {
+    Alert.alert(message);
+  }, []);
 
-  // --- TAG MANAGEMENT ---
-  const handleAddTag = () => {
-    const tag = tagInput.trim().toLowerCase();
-    
-    // Validate tag
-    if (!tag) {
-      showMessage("Please enter a tag");
-      return;
-    }
-    
-    if (tag.length > MAX_TAG_LENGTH) {
-      showMessage(`Tag must be ${MAX_TAG_LENGTH} characters or less`);
-      return;
-    }
-    
-    if (tags.includes(tag)) {
-      showMessage("Tag already exists");
-      return;
-    }
-    
-    if (tags.length >= MAX_TAGS) {
-      showMessage(`Maximum ${MAX_TAGS} tags allowed`);
-      return;
-    }
-    
-    if (tag) {
-      setTags([...tags, tag]);
-      setTagInput("");
-    }
-  };
+  /* ================================================================================
+     🎯 NOTIFICATION SCHEDULING - ✅ FIXED with proper field mapping
+     ================================================================================ */
 
-  const handleRemoveTag = (tag) => {
-    setTags(tags.filter(t => t !== tag));
-  };
-
-  // --- MILESTONE MANAGEMENT IN FORM ---
-  const handleAddMilestoneInForm = () => {
-    if (!newMilestoneTitle.trim()) {
-      showMessage("Enter milestone title");
-      return;
-    }
-    
-    if (newMilestoneTitle.trim().length > MAX_TITLE_LENGTH) {
-      showMessage(`Milestone title must be ${MAX_TITLE_LENGTH} characters or less`);
-      return;
-    }
-    
-    if (goalMilestones.length >= MAX_MILESTONES) {
-      showMessage(`Maximum ${MAX_MILESTONES} milestones allowed`);
-      return;
-    }
-    
-    const newMilestone = {
-      title: newMilestoneTitle.trim(),
-      dueDate: newMilestoneDueDate,
-      completed: false,
-      createdAt: new Date()
-    };
-    
-    setGoalMilestones([...goalMilestones, newMilestone]);
-    setNewMilestoneTitle("");
-    setNewMilestoneDueDate(new Date());
-  };
-
-  const handleRemoveMilestoneInForm = (index) => {
-    if (index < 0 || index >= goalMilestones.length) return;
-    const updated = [...goalMilestones];
-    updated.splice(index, 1);
-    setGoalMilestones(updated);
-  };
-
-  const handleToggleMilestoneInForm = (index) => {
-    if (index < 0 || index >= goalMilestones.length) return;
-    const updated = [...goalMilestones];
-    updated[index] = {
-      ...updated[index],
-      completed: !updated[index].completed
-    };
-    setGoalMilestones(updated);
-  };
-
-  // --- TOGGLE NOTIFICATIONS FOR A GOAL ---
-  const handleToggleNotifications = async (goal) => {
-    if (!goal.isOwner) {
-      showMessage("Only owner can modify notifications");
-      return;
-    }
+  const scheduleNotifications = useCallback(async (goal) => {
+    if (!goal.enable_notifications || goal.progress === 100 || goal.archived) return;
+    if (!notificationPermission) return;
 
     try {
-      const newEnableNotifications = !goal.enableNotifications;
+      await cancelGoalNotifications(goal.id);
+
+      const dueDate = goal.dueDate instanceof Date ? goal.dueDate : new Date(goal.dueDate || goal.due_date);
       
-      // Optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goal.id ? { ...g, enableNotifications: newEnableNotifications } : g
-      ));
-      
-      await updateDoc(doc(db, "goals", goal.id), {
-        enableNotifications: newEnableNotifications,
-        lastNotifiedAt: new Date(),
-      });
+      // Preferred: user-set notification time. Fallback: 30min before due. Last resort: at due time.
+      let notificationTime = goal.notificationTime instanceof Date
+        ? goal.notificationTime
+        : goal.notificationTime
+          ? new Date(goal.notificationTime)
+          : new Date(dueDate.getTime() - 30 * 60 * 1000);
 
-      if (newEnableNotifications && !goal.archived && goal.progress < 100) {
-        try {
-          const notificationIds = await scheduleGoalNotifications(
-            {
-              id: goal.id,
-              title: goal.title,
-              deadline: goal.dueDate,
-              completed: goal.progress === 100,
-              enableNotifications: true,
-              milestones: goal.milestones,
-              notificationTime: goal.notificationTime,
-              customNotificationMessage: goal.customNotificationMessage,
-              ...goal
-            },
-            [user.uid],
-            goal.sharedDocId ? true : false
-          );
-          
-          await updateDoc(doc(db, "goals", goal.id), {
-            notificationIds: notificationIds.ids || notificationIds || [],
-            lastNotificationUpdate: new Date()
-          });
-          
-          showMessage("Notifications enabled for this goal");
-        } catch (error) {
-          console.error("Failed to enable notifications:", error);
-          showMessage("Goal saved but notifications failed to schedule");
-        }
-      } else {
-        await cancelGoalNotifications(goal.id);
-        showMessage("Notifications disabled for this goal");
-      }
-    } catch (error) {
-      console.error("Error toggling notifications:", error);
-      showMessage("Failed to update notifications");
-      // Revert optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goal.id ? { ...g, enableNotifications: goal.enableNotifications } : g
-      ));
-    }
-  };
-
-  // --- RESOLVE EMAIL TO UID (with caching and debouncing) ---
-  const resolveOneEmail = async (email) => {
-    const cached = emailResolutionCache.get(email);
-    if (cached) return cached;
-    
-    try {
-      const q = query(collection(db, "users"), where("email", "==", email.trim().toLowerCase()));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        const result = { notFound: true };
-        emailResolutionCache.set(email, result);
-        return result;
-      }
-      const docData = snap.docs[0].data();
-      const result = { 
-        uid: snap.docs[0].id,
-        email: docData.email,
-        displayName: docData.displayName || docData.username || docData.email?.split("@")[0] || "User"
-      };
-      emailResolutionCache.set(email, result);
-      return result;
-    } catch (e) {
-      console.error("resolveOneEmail", e);
-      return { notFound: true };
-    }
-  };
-
-  // --- ADD COLLABORATOR (SHARE MODAL) ---
-  const handleAddShareEmail = async () => {
-    setShareEmailError("");
-    const email = shareEmail.trim().toLowerCase();
-    if (!email) return;
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setShareEmailError("Invalid email");
-      return;
-    }
-
-    if (shareCollaborators.find(c => c.email === email)) {
-      setShareEmailError("Already added");
-      return;
-    }
-
-    const res = await resolveOneEmail(email);
-    if (res.notFound) {
-      showMessage(`User "${email}" is not registered`);
-      return;
-    }
-
-    if (res.uid === user.uid) {
-      setShareEmailError("You are the owner");
-      return;
-    }
-
-    setShareCollaborators((prev) => [...prev, { 
-      email: res.email, 
-      uid: res.uid,
-      displayName: res.displayName
-    }]);
-    setShareEmail("");
-  };
-
-  const handleRemoveShareUid = (uid) => {
-    setShareCollaborators((prev) => prev.filter((c) => c.uid !== uid));
-  };
-
-  // --- OPEN SHARE MODAL ---
-  const openShareModal = async (goal) => {
-    if (!goal.isOwner) {
-      showMessage("Only the owner can share");
-      return;
-    }
-    setShareGoal(goal);
-    setShareCollaborators([]);
-    setShareEmail("");
-    setShareEmailError("");
-    setShareModalVisible(true);
-
-    try {
-      const publicPath = getSharedGoalsCollectionPath(appId);
-      const q = query(
-        collection(db, publicPath),
-        where("originalGoalId", "==", goal.id),
-        where("ownerId", "==", user.uid)
-      );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        const existingCollabs = snap.docs[0].data().collaborators || [];
-        const filtered = existingCollabs.filter((uid) => uid !== user.uid);
-        
-        const profiles = await Promise.all(
-          filtered.map(async (uid) => {
-            const userDoc = await getDoc(doc(db, "users", uid));
-            if (userDoc.exists()) {
-              const data = userDoc.data();
-              return {
-                uid,
-                email: data.email,
-                displayName: data.displayName || data.username || data.email?.split("@")[0] || "User"
-              };
-            }
-            return { uid, email: uid, displayName: uid.slice(0, 8) };
-          })
-        );
-        setShareCollaborators(profiles);
-      }
-    } catch (e) {
-      console.error("openShareModal", e);
-    }
-  };
-
-  // --- SAVE SHARING ---
-  const handleSaveSharing = async () => {
-    if (shareCollaborators.length === 0) {
-      showMessage("Add at least one collaborator");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const publicPath = getSharedGoalsCollectionPath(appId);
-      const collaboratorUids = shareCollaborators.map(c => c.uid);
-      
-      const payload = {
-        title: shareGoal.title,
-        description: shareGoal.description || "",
-        dueDate: shareGoal.dueDate,
-        ownerId: user.uid,
-        creatorId: user.uid,
-        creatorName: user.displayName || user.email,
-        originalGoalId: shareGoal.id,
-        participants: Array.from(new Set([user.uid, ...collaboratorUids])),
-        collaborators: Array.from(new Set([user.uid, ...collaboratorUids])),
-        progress: shareGoal.progress || 0,
-        milestones: shareGoal.milestones || [],
-        priority: shareGoal.priority || "medium",
-        category: shareGoal.category || "personal",
-        tags: shareGoal.tags || [],
-        contributions: { [user.uid]: shareGoal.progress || 0 },
-        comments: [],
-        sharedAt: new Date(),
-        createdAt: shareGoal.createdAt || new Date(),
-      };
-
-      const q = query(
-        collection(db, publicPath),
-        where("originalGoalId", "==", shareGoal.id),
-        where("ownerId", "==", user.uid)
-      );
-      const existing = await getDocs(q);
-
-      if (!existing.empty) {
-        await updateDoc(doc(db, publicPath, existing.docs[0].id), payload);
-      } else {
-        await addDoc(collection(db, publicPath), payload);
+      // if preferred time already passed, try due date itself
+      if (notificationTime < new Date()) {
+        notificationTime = dueDate;
       }
 
-      const notifyUids = collaboratorUids.filter((uid) => uid !== user.uid);
-      if (notifyUids.length) {
-        for (const uid of notifyUids) {
-          try {
-            await sendNotification(
-              [uid],
-              `${user.displayName || user.email} shared "${shareGoal.title}" with you`,
-              { 
-                goalId: shareGoal.id,
-                goalTitle: shareGoal.title,
-                type: NOTIFICATION_TYPES.GOAL_INVITE,
-                screen: "SharedGoals"
-              },
-              {
-                pushTitle: "🎯 Goal Invitation",
-                type: NOTIFICATION_TYPES.GOAL_INVITE,
-                priority: "high",
-                actionRequired: true
-              }
-            );
-          } catch (notifError) {
-            console.error("Notification error:", notifError);
-          }
-        }
+      // If even the due date is in the past, skip scheduling
+      if (notificationTime < new Date()) {
+        console.warn("⏰ Goal due date is in the past — skipping notification:", goal.title);
+        return;
       }
 
-      showMessage("Goal shared successfully!");
-      setShareModalVisible(false);
-      setShareCollaborators([]);
-    } catch (e) {
-      console.error("Share error:", e);
-      showMessage("Sharing failed: " + (e.message || "Unknown error"));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // --- NEW ENHANCEMENT FUNCTIONS ---
-
-  // 1. Archive Goal Function
-  const handleArchiveGoal = async (goal) => {
-    if (!goal.isOwner) {
-      showMessage("Only owner can archive");
-      return;
-    }
-
-    Alert.alert(
-      "Archive Goal",
-      `Archive "${goal.title}"? You can restore it later from settings.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Archive",
-          style: "default",
-          onPress: async () => {
-            try {
-              // Optimistic update
-              setGoals(prev => prev.map(g => 
-                g.id === goal.id ? { ...g, archived: true, archivedAt: new Date() } : g
-              ));
-              
-              await updateDoc(doc(db, "goals", goal.id), {
-                archived: true,
-                archivedAt: new Date(),
-              });
-              
-              await cancelGoalNotifications(goal.id);
-              
-              const uids = await getSharedCollaborators(goal.id);
-              if (uids.length) {
-                try {
-                  await sendNotification(
-                    uids,
-                    `${user.displayName || user.email} archived "${goal.title}"`,
-                    { 
-                      goalId: goal.id,
-                      goalTitle: goal.title,
-                      type: NOTIFICATION_TYPES.GOAL_UPDATED,
-                      screen: "Goals"
-                    },
-                    {
-                      pushTitle: "📦 Goal Archived",
-                      type: NOTIFICATION_TYPES.GOAL_UPDATED
-                    }
-                  );
-                } catch (e) {
-                  console.error("Notification error:", e);
-                }
-              }
-              
-              showMessage("Goal archived");
-            } catch (err) {
-              console.error(err);
-              showMessage("Archive failed");
-              // Revert optimistic update
-              setGoals(prev => prev.map(g => 
-                g.id === goal.id ? { ...g, archived: goal.archived } : g
-              ));
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  // 2. Restore Goal Function
-  const handleRestoreGoal = async (goal) => {
-    try {
-      // Optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goal.id ? { ...g, archived: false, restoredAt: new Date() } : g
-      ));
-      
-      await updateDoc(doc(db, "goals", goal.id), {
-        archived: false,
-        restoredAt: new Date(),
-      });
-      
-      if (goal.enableNotifications && !goal.archived && goal.progress < 100) {
-        await scheduleGoalNotifications(
-          {
-            id: goal.id,
-            title: goal.title,
-            deadline: goal.dueDate,
-            completed: goal.progress === 100,
-            enableNotifications: true,
-            milestones: goal.milestones,
-            ...goal
-          },
-          [user.uid],
-          goal.sharedDocId ? true : false
-        );
-      }
-      
-      showMessage("Goal restored");
-    } catch (err) {
-      console.error(err);
-      showMessage("Restore failed");
-      // Revert optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goal.id ? { ...g, archived: goal.archived } : g
-      ));
-    }
-  };
-
-  // 3. Save as Template Function
-  const handleSaveAsTemplate = async (goal) => {
-    if (!goal.isOwner) {
-      showMessage("Only owner can save as template");
-      return;
-    }
-
-    try {
-      const templateData = {
+      // ✅ FIX: Map snake_case to camelCase and pass customMessage properly
+      await scheduleGoalNotifications({
+        id: goal.id,
         title: goal.title,
-        description: goal.description,
-        category: goal.category,
-        priority: goal.priority,
-        tags: goal.tags || [],
-        milestones: goal.milestones.map(m => ({ 
-          ...m, 
-          completed: false,
-          dueDate: null 
-        })),
-        estimatedTime: goal.estimatedTime || 0,
-        isTemplate: true,
-        userId: user.uid,
-        createdAt: new Date(),
-        templateName: `${goal.title} Template`,
-      };
-
-      await addDoc(collection(db, "goalTemplates"), templateData);
-      showMessage("Template saved successfully");
-    } catch (err) {
-      console.error(err);
-      showMessage("Failed to save template");
-    }
-  };
-
-  // 4. Time Tracking Functions with persistence
-  const handleStartTimer = async (goalId) => {
-    if (activeTimer && activeTimer.goalId !== goalId) {
-      await handleStopTimer(activeTimer.goalId);
-    }
-
-    const timerId = Date.now();
-    const timerData = {
-      goalId,
-      startTime: Date.now(),
-      timerId
-    };
-    
-    setActiveTimer(timerData);
-    
-    // Persist timer to AsyncStorage
-    try {
-      await AsyncStorage.setItem(`active_timer_${user.uid}`, JSON.stringify(timerData));
-    } catch (error) {
-      console.error("Failed to persist timer:", error);
-    }
-
-    showMessage(`Started timer for goal`);
-  };
-
-  const handleStopTimer = async (goalId) => {
-    if (!activeTimer || activeTimer.goalId !== goalId) return;
-
-    const duration = Math.floor((Date.now() - activeTimer.startTime) / 1000);
-    const goal = goals.find(g => g.id === goalId);
-    
-    if (goal) {
-      try {
-        const newTimeEntry = {
-          startTime: new Date(activeTimer.startTime),
-          endTime: new Date(),
-          duration,
-          notes: ""
-        };
-
-        const updatedTimeEntries = [...(goal.timeEntries || []), newTimeEntry];
-        const newTotalTimeSpent = (goal.totalTimeSpent || 0) + duration;
-        
-        // Optimistic update
-        setGoals(prev => prev.map(g => 
-          g.id === goalId ? { 
-            ...g, 
-            timeEntries: updatedTimeEntries,
-            totalTimeSpent: newTotalTimeSpent
-          } : g
-        ));
-        
-        await updateDoc(doc(db, "goals", goalId), {
-          timeEntries: updatedTimeEntries,
-          totalTimeSpent: newTotalTimeSpent
-        });
-
-        showMessage(`Tracked ${Math.floor(duration / 60)} minutes`);
-      } catch (err) {
-        console.error("Error saving time entry:", err);
-        showMessage("Failed to save time");
-        // Revert optimistic update
-        setGoals(prev => prev.map(g => 
-          g.id === goalId ? g : g
-        ));
-      }
-    }
-
-    setActiveTimer(null);
-    // Clear persisted timer
-    try {
-      await AsyncStorage.removeItem(`active_timer_${user.uid}`);
-    } catch (error) {
-      console.error("Failed to clear timer:", error);
-    }
-  };
-
-  // Load active timer on mount
-  useEffect(() => {
-    const loadActiveTimer = async () => {
-      if (!user?.uid) return;
-      
-      try {
-        const timerData = await AsyncStorage.getItem(`active_timer_${user.uid}`);
-        if (timerData) {
-          const parsed = JSON.parse(timerData);
-          // Check if timer is still valid (not older than 24 hours)
-          if (Date.now() - parsed.startTime < 24 * HOUR) {
-            setActiveTimer(parsed);
-          } else {
-            // Timer expired, clean up
-            await AsyncStorage.removeItem(`active_timer_${user.uid}`);
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load active timer:", error);
-      }
-    };
-    
-    loadActiveTimer();
-  }, [user?.uid]);
-
-  // 5. Export Goals Function
-  const handleExportGoals = async () => {
-    try {
-      const dataToExport = goals.map(goal => ({
-        title: goal.title,
-        description: goal.description,
-        dueDate: goal.dueDate.toISOString(),
+        enableNotifications: goal.enable_notifications, // ✅ Explicit mapping
+        dueDate: dueDate,
+        notificationTime: notificationTime,
         priority: goal.priority,
         category: goal.category,
-        progress: goal.progress,
-        milestones: goal.milestones.map(m => ({
-          title: m.title,
-          completed: m.completed,
-          dueDate: m.dueDate ? new Date(m.dueDate).toISOString() : null
-        })),
-        tags: goal.tags,
-        timeSpent: goal.totalTimeSpent,
-        createdAt: goal.createdAt.toISOString()
-      }));
+        customMessage: goal.custom_notification_message || goal.customMessage, // ✅ Pass custom message
+      });
 
-      const jsonString = JSON.stringify(dataToExport, null, 2);
-      const fileUri = FileSystem.documentDirectory + `goals_export_${Date.now()}.json`;
-      
-      await FileSystem.writeAsStringAsync(fileUri, jsonString);
-      
-      await Sharing.shareAsync(fileUri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Goals',
-        UTI: 'public.json'
+      console.log("✅ Goal notification scheduled for:", notificationTime.toISOString());
+    } catch (error) {
+      console.error("Failed to schedule goal notifications:", error);
+    }
+  }, [notificationPermission]);
+
+  const handleQuickAdd = async ({ title, dueDate }) => {
+    if (!user) return;
+    
+    try {
+      await supabase.from("goals").insert({
+        title,
+        description: "",
+        due_date: dueDate.toISOString(),
+        user_id: user.id,
+        milestones: [],
+        tags: [],
+        category: "personal",
+        priority: "medium",
+        recurrence: { type: 'none', interval: 1 },
+        enable_notifications: true,
+        notification_time: new Date(dueDate.getTime() - 30 * 60000).toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
       
-      showMessage("Goals exported successfully");
-    } catch (err) {
-      console.error("Export error:", err);
-      showMessage("Export failed");
+      showMessage("✨ Goal created!");
+    } catch (error) {
+      console.error("Quick add error:", error);
+      Alert.alert("Error", "Failed to create goal");
     }
   };
 
-  // --- SAVE GOAL (CREATE/EDIT) with input validation ---
+  /* ================================================================================
+     🎯 GOAL OPERATIONS - ✅ FIXED handleSaveGoal with proper notification mapping
+     ================================================================================ */
+
   const handleSaveGoal = async () => {
-    if (loading) {
-      console.warn('Operation already in progress');
+    if (!formState.title.trim()) {
+      Alert.alert("Title Required", "Please enter a goal title");
       return;
     }
     
-    // Input validation
-    if (!validateGoalInput()) return;
+    if (!user) return;
     
-    if (!user?.uid) return;
-
     setLoading(true);
-    triggerHaptic("heavy");
-    
-    let savedGoalId;
     
     try {
-      const combined = new Date(
-        selectedDate.getFullYear(),
-        selectedDate.getMonth(),
-        selectedDate.getDate(),
-        selectedDate.getHours(),
-        selectedDate.getMinutes()
+      const dueDateTime = new Date(
+        formState.dueDate.getFullYear(),
+        formState.dueDate.getMonth(),
+        formState.dueDate.getDate(),
+        formState.dueTime.getHours(),
+        formState.dueTime.getMinutes()
       );
 
-      const goalData = {
-        title: goalTitle.trim(),
-        description: goalDescription.trim(),
-        dueDate: combined,
-        userId: user.uid,
-        createdAt: currentGoal?.createdAt || new Date(),
-        milestones: goalMilestones,
-        priority: selectedPriority,
-        category: selectedCategory,
-        tags: tags,
-        updatedAt: new Date(),
-        archived: false,
-        recurrence: isRecurring ? {
-          type: recurrenceType,
-          interval: recurrenceInterval
-        } : { type: 'none', interval: 1 },
-        estimatedTime: estimatedHours ? parseInt(estimatedHours) * 3600 : 0,
-        enableNotifications: enableNotifications,
-        notificationTime: enableNotifications ? notificationTime : null,
-        customNotificationMessage: customNotificationMessage.trim(),
-        syncToCalendar: syncToCalendar,
-        notificationIds: currentGoal?.notificationIds || [],
-      };
+      if (formState.isEditing && formState.id) {
+        // Update existing goal
+        await supabase.from("goals").update({
+          title: formState.title.trim(),
+          description: formState.description.trim(),
+          due_date: dueDateTime.toISOString(),
+          category: formState.category,
+          priority: formState.priority,
+          recurrence: formState.recurrence,
+          milestones: formState.milestones,
+          tags: formState.tags,
+          enable_notifications: formState.enable_notifications,
+          notification_time: formState.enable_notifications ? formState.notificationTime?.toISOString() : null,
+          // ✅ FIXED: Removed custom_notification_message
+          updated_at: new Date().toISOString(),
+        }).eq("id", formState.id);
 
-      if (isEditing && currentGoal) {
-        // Optimistic update for editing
-        setGoals(prev => prev.map(g => 
-          g.id === currentGoal.id ? { ...g, ...goalData } : g
-        ));
-        
-        await updateDoc(doc(db, "goals", currentGoal.id), goalData);
-        savedGoalId = currentGoal.id;
-
-        await cancelGoalNotifications(savedGoalId);
-
-        const participants = [user.uid];
-        if (currentGoal.sharedDocId) {
-          const sharedSnap = await getDoc(doc(db, getSharedGoalsCollectionPath(appId), currentGoal.sharedDocId));
-          if (sharedSnap.exists()) participants.push(...(sharedSnap.data().collaborators || []));
-        }
-        const others = participants.filter((uid) => uid !== user.uid);
-        if (others.length) {
-          try {
-            await sendNotification(
-              others,
-              `${user.displayName || user.email} updated "${goalData.title}"`,
-              { 
-                goalId: savedGoalId,
-                goalTitle: goalData.title,
-                type: NOTIFICATION_TYPES.GOAL_UPDATED,
-                screen: "Goals"
-              },
-              {
-                pushTitle: "✏️ Goal Updated",
-                type: NOTIFICATION_TYPES.GOAL_UPDATED
-              }
-            );
-          } catch (e) {
-            console.error("Notification error:", e);
-          }
-        }
-      } else {
-        const docRef = await addDoc(collection(db, "goals"), goalData);
-        savedGoalId = docRef.id;
-
-        // Optimistic update for new goal
-        const newGoal = { ...goalData, id: savedGoalId, progress: 0, daysRemaining: calculateDaysRemaining(combined) };
-        setGoals(prev => [...prev, newGoal]);
-
-        // Handle recurring goals with limits
-        if (isRecurring && recurrenceType !== 'none') {
-          const nextDueDate = calculateNextDueDate(combined, goalData.recurrence);
-          if (nextDueDate) {
-            const nextGoalData = {
-              ...goalData,
-              dueDate: nextDueDate,
-              parentGoalId: savedGoalId,
-              recurrence: goalData.recurrence,
-              createdAt: new Date()
-            };
-            
-            await addDoc(collection(db, "goals"), nextGoalData);
-          }
-        }
-      }
-
-      // Schedule notifications if enabled and goal is not completed/archived
-      if (enableNotifications && !currentGoal?.archived && currentGoal?.progress !== 100) {
-        const hasPermissions = await checkAndRequestNotificationPermissions();
-        
-        if (hasPermissions) {
-          try {
-            const notificationIds = await scheduleGoalNotifications(
-              {
-                id: savedGoalId,
-                title: goalData.title,
-                deadline: combined,
-                completed: false,
-                enableNotifications: true,
-                milestones: goalMilestones,
-                notificationTime: notificationTime,
-                customNotificationMessage: customNotificationMessage.trim(),
-                ...goalData
-              },
-              [user.uid],
-              false
-            );
-            
-            await updateDoc(doc(db, "goals", savedGoalId), {
-              notificationIds: notificationIds.ids || notificationIds || [],
-              lastNotificationUpdate: new Date()
-            });
-          } catch (error) {
-            console.error("Failed to schedule notifications:", error);
-            showMessage("Goal saved but notifications failed to schedule");
-          }
+        if (formState.enable_notifications) {
+          // ✅ FIX: Pass properly mapped object to scheduleNotifications
+          await scheduleNotifications({ 
+            ...formState, 
+            id: formState.id, 
+            dueDate: dueDateTime,
+            enable_notifications: formState.enable_notifications,
+            custom_notification_message: formState.custom_notification_message,
+          });
         } else {
-          showMessage("Goal saved, but notifications are disabled");
+          await cancelGoalNotifications(formState.id);
+        }
+        
+        showMessage("✅ Goal updated");
+      } else {
+        // Create new goal
+        const { data: createdGoal, error } = await supabase.from("goals").insert({
+          title: formState.title.trim(),
+          description: formState.description.trim(),
+          due_date: dueDateTime.toISOString(),
+          category: formState.category,
+          priority: formState.priority,
+          recurrence: formState.recurrence,
+          milestones: formState.milestones,
+          tags: formState.tags,
+          enable_notifications: formState.enable_notifications,
+          notification_time: formState.enable_notifications ? formState.notificationTime?.toISOString() : null,
+          // ✅ FIXED: Removed custom_notification_message
+          user_id: user.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).select().single();
+        
+        if (error) throw error;
+        
+        showMessage("🎯 Goal created!");
+        
+        if (formState.enable_notifications && createdGoal) {
+          // ✅ FIX: Pass properly mapped object to scheduleNotifications
+          await scheduleNotifications({
+            ...formState,
+            id: createdGoal.id,
+            dueDate: dueDateTime,
+            enable_notifications: formState.enable_notifications,
+            custom_notification_message: formState.custom_notification_message,
+          });
         }
       }
-
-      showMessage(isEditing ? "Goal updated" : "Goal created");
-      setIsFormModalVisible(false);
-      setTags([]);
-      setGoalMilestones([]);
-      setIsRecurring(false);
-      setRecurrenceType('none');
-      setRecurrenceInterval(1);
-      setEstimatedHours("");
-      setEnableNotifications(true);
-      setNotificationTime(new Date(Date.now() + DEFAULT_REMINDER_OFFSET));
-      setCustomNotificationMessage("");
-      setSyncToCalendar(false);
-    } catch (err) {
-      console.error(err);
-      showMessage("Save failed");
-      // Revert optimistic updates
-      if (isEditing && currentGoal) {
-        setGoals(prev => prev.map(g => 
-          g.id === currentGoal.id ? currentGoal : g
-        ));
-      } else if (savedGoalId) {
-        setGoals(prev => prev.filter(g => g.id !== savedGoalId));
-      }
+      
+      setIsFormVisible(false);
+      formDispatch({ type: 'RESET' });
+    } catch (error) {
+      console.error("Save goal error:", error);
+      Alert.alert("Error", "Failed to save goal");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- DELETE GOAL ---
-  const handleDeleteGoal = (goal) => {
-    if (!goal.isOwner) {
-      showMessage("Only owner can delete");
-      return;
-    }
+  const handleEditGoal = (goal) => {
+    formDispatch({ type: 'LOAD_GOAL', payload: goal });
+    setIsFormVisible(true);
+  };
 
+  const handleDeleteGoal = async (goal) => {
     Alert.alert(
-      "Delete Goal",
-      `Are you sure you want to delete "${goal.title}"? This action cannot be undone.`,
+      goal.isOwner ? "Delete Goal" : "Remove Goal",
+      goal.isOwner 
+        ? `Are you sure you want to delete "${goal.title}"?`
+        : `Remove "${goal.title}" from your goals?`,
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Delete",
+          text: goal.isOwner ? "Delete" : "Remove",
           style: "destructive",
           onPress: async () => {
             try {
-              // Optimistic update
-              setGoals(prev => prev.filter(g => g.id !== goal.id));
-              
               await cancelGoalNotifications(goal.id);
-
-              if (goal.sharedDocId) {
-                const sharedPath = getSharedGoalsCollectionPath(appId);
-                const sharedSnap = await getDoc(doc(db, sharedPath, goal.sharedDocId));
-                
-                if (sharedSnap.exists()) {
-                  const uidsToNotify = (sharedSnap.data().collaborators || []).filter((uid) => uid !== user.uid);
-                  if (uidsToNotify.length) {
-                    try {
-                      await sendNotification(
-                        uidsToNotify,
-                        `${user.displayName || user.email} deleted "${goal.title}"`,
-                        { 
-                          goalTitle: goal.title,
-                          type: NOTIFICATION_TYPES.GOAL_DELETED,
-                          screen: "Goals"
-                        },
-                        {
-                          pushTitle: "🗑️ Goal Deleted",
-                          type: NOTIFICATION_TYPES.GOAL_DELETED
-                        }
-                      );
-                    } catch (e) {
-                      console.error("Notification error:", e);
-                    }
-                  }
-                }
-                await deleteDoc(doc(db, sharedPath, goal.sharedDocId));
-              }
-
-              await deleteDoc(doc(db, "goals", goal.id));
-              showMessage("Goal deleted");
-            } catch (err) {
-              console.error(err);
-              showMessage("Delete failed");
-              // Revert optimistic update
-              setGoals(prev => [...prev, goal]);
+              await supabase.from("goals").delete().eq("id", goal.id);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              showMessage(goal.isOwner ? "🗑️ Goal deleted" : "✅ Goal removed");
+            } catch (error) {
+              console.error("Delete error:", error);
+              Alert.alert("Error", "Failed to delete goal");
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
 
-  // --- DUPLICATE GOAL ---
-  const handleDuplicateGoal = async (goal) => {
+  /* ================================================================================
+     🔔 TOGGLE NOTIFICATION - ✅ FIXED with proper mapping
+     ================================================================================ */
+
+  const handleToggleNotification = async (goal) => {
     if (!goal.isOwner) {
-      showMessage("Only owner can duplicate");
+      showMessage("Only the owner can modify notifications");
       return;
     }
 
-    let newGoalId;
-
     try {
-      const newGoal = {
-        title: `${goal.title} (Copy)`,
-        description: goal.description,
-        dueDate: new Date(Date.now() + 7 * DAY),
-        userId: user.uid,
-        createdAt: new Date(),
-        milestones: goal.milestones.map(m => ({ ...m, completed: false })),
-        priority: goal.priority,
-        category: goal.category,
-        tags: goal.tags || [],
-        recurrence: goal.recurrence,
-        estimatedTime: goal.estimatedTime || 0,
-        enableNotifications: goal.enableNotifications,
-        notificationTime: goal.notificationTime,
-        customNotificationMessage: goal.customNotificationMessage,
-        syncToCalendar: goal.syncToCalendar,
-      };
-
-      const docRef = await addDoc(collection(db, "goals"), newGoal);
-      newGoalId = docRef.id;
-
-      // Optimistic update
-      const optimisticGoal = { ...newGoal, id: newGoalId, progress: 0, daysRemaining: calculateDaysRemaining(newGoal.dueDate) };
-      setGoals(prev => [...prev, optimisticGoal]);
-
-      if (goal.enableNotifications && !goal.archived && goal.progress < 100) {
-        try {
-          const notificationIds = await scheduleGoalNotifications(
-            {
-              id: newGoalId,
-              title: newGoal.title,
-              deadline: newGoal.dueDate,
-              completed: false,
-              enableNotifications: true,
-              milestones: newGoal.milestones,
-              notificationTime: newGoal.notificationTime,
-              customNotificationMessage: newGoal.customNotificationMessage,
-              ...newGoal
-            },
-            [user.uid],
-            false
-          );
-          
-          await updateDoc(doc(db, "goals", newGoalId), {
-            notificationIds: notificationIds.ids || notificationIds || [],
-            lastNotificationUpdate: new Date()
-          });
-        } catch (error) {
-          console.error("Failed to schedule notifications for duplicated goal:", error);
-          showMessage("Goal duplicated, but notifications may need manual setup");
-        }
-      }
-
-      showMessage("Goal duplicated successfully");
-    } catch (err) {
-      console.error(err);
-      showMessage("Duplicate failed");
-      // Revert optimistic update
-      if (newGoalId) {
-        setGoals(prev => prev.filter(g => g.id !== newGoalId));
-      }
-    }
-  };
-
-  // --- MILESTONE HELPERS with optimistic updates ---
-  const handleAddMilestone = async (goalId, title, dueDate = null) => {
-    if (!title?.trim()) return;
-    const goal = goals.find((g) => g.id === goalId);
-    if (!goal?.isOwner) {
-      showMessage("Only owner can add milestones");
-      return;
-    }
-    
-    const newMilestone = {
-      title: title.trim(),
-      completed: false,
-      createdAt: new Date(),
-      dueDate: dueDate || null
-    };
-    
-    try {
-      // Optimistic update
-      const updatedMilestones = [...goal.milestones, newMilestone];
-      const newProgress = updatedMilestones.length ? 
-        Math.round((updatedMilestones.filter(m => m.completed).length / updatedMilestones.length) * 100) : 0;
+      const newValue = !goal.enable_notifications;
       
-      setGoals(prev => prev.map(g => 
-        g.id === goalId ? { 
-          ...g, 
-          milestones: updatedMilestones,
-          progress: newProgress
-        } : g
-      ));
-
-      await updateDoc(doc(db, "goals", goalId), {
-        milestones: arrayUnion(newMilestone),
-      });
-
-      if (goal.enableNotifications && !goal.archived && goal.progress < 100) {
-        await cancelGoalNotifications(goalId);
-        await scheduleGoalNotifications(
-          {
-            id: goal.id,
-            title: goal.title,
-            deadline: goal.dueDate,
-            milestones: updatedMilestones,
-            enableNotifications: true,
-            ...goal
-          },
-          [user.uid],
-          goal.sharedDocId ? true : false
-        );
+      await supabase.from("goals").update({ 
+        enable_notifications: newValue 
+      }).eq("id", goal.id);
+      
+      if (newValue) {
+        // ✅ FIX: Pass properly mapped object
+        await scheduleNotifications({ 
+          ...goal, 
+          enable_notifications: true,
+          enableNotifications: true, // Also include camelCase for safety
+        });
+        showMessage("🔔 Notifications enabled");
+      } else {
+        await cancelGoalNotifications(goal.id);
+        showMessage("🔕 Notifications disabled");
       }
-
-      const uids = await getSharedCollaborators(goalId);
-      if (uids.length) {
-        await sendNotification(
-          uids,
-          `${user.displayName || user.email} added milestone "${title.trim()}" to "${goal.title}"`,
-          { 
-            goalId: goalId, 
-            type: NOTIFICATION_TYPES.MILESTONE_ADDED,
-            screen: "Goals"
-          },
-          {
-            pushTitle: "🎯 New Milestone",
-            type: NOTIFICATION_TYPES.MILESTONE_ADDED
-          }
-        );
-      }
-    } catch (err) {
-      console.error(err);
-      showMessage("Add failed");
-      // Revert optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goalId ? goal : g
-      ));
+    } catch (error) {
+      console.error("Toggle notification error:", error);
+      Alert.alert("Error", "Failed to update notifications");
     }
   };
 
   const handleToggleMilestone = async (goalId, milestoneIndex) => {
-    const goal = goals.find((g) => g.id === goalId);
-    if (!goal?.isOwner || milestoneIndex >= goal.milestones.length) {
-      showMessage("Cannot update milestone");
-      return;
-    }
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
     
-    const milestone = goal.milestones[milestoneIndex];
-    const updated = { ...milestone, completed: !milestone.completed };
-    const updatedMilestones = goal.milestones.map((m, i) => (i === milestoneIndex ? updated : m));
-    const newProgress = updatedMilestones.length ? 
-      Math.round((updatedMilestones.filter(m => m.completed).length / updatedMilestones.length) * 100) : 0;
-
     try {
-      // Optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goalId ? { 
-          ...g, 
-          milestones: updatedMilestones,
-          progress: newProgress
-        } : g
-      ));
-
-      await updateDoc(doc(db, "goals", goalId), { milestones: updatedMilestones });
-
-      const action = updated.completed ? "completed" : "incomplete";
-      const uids = await getSharedCollaborators(goalId);
-      if (uids.length) {
-        const notificationType = updated.completed ? 
-          NOTIFICATION_TYPES.MILESTONE_COMPLETED : 
-          NOTIFICATION_TYPES.GOAL_UPDATED;
-        
-        try {
-          await sendNotification(
-            uids,
-            `${user.displayName || user.email} marked "${milestone.title}" as ${action}`,
-            { 
-              goalId, 
-              goalTitle: goal.title,
-              milestoneTitle: milestone.title, 
-              type: notificationType,
-              screen: "Goals"
-            },
-            {
-              pushTitle: updated.completed ? "✨ Milestone Completed!" : "📝 Milestone Updated",
-              type: notificationType,
-              priority: updated.completed ? "high" : "default"
-            }
-          );
-        } catch (e) {
-          console.error("Notification error:", e);
+      const updatedMilestones = [...goal.milestones];
+      updatedMilestones[milestoneIndex].completed = !updatedMilestones[milestoneIndex].completed;
+      
+      const completedCount = updatedMilestones.filter(m => m.completed).length;
+      const progress = Math.round((completedCount / updatedMilestones.length) * 100);
+      
+      await supabase.from("goals").update({ 
+        milestones: updatedMilestones 
+      }).eq("id", goalId);
+      
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      
+      if (updatedMilestones[milestoneIndex].completed) {
+        if (progress === 100) {
+          showMessage("🎉 Goal completed!");
+          await supabase.from("goals").update({ 
+            enable_notifications: false 
+          }).eq("id", goalId);
+        } else {
+          showMessage("✨ Milestone completed");
         }
       }
-    } catch (err) {
-      console.error(err);
-      showMessage("Update failed");
-      // Revert optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goalId ? goal : g
-      ));
-    }
-  };
-
-  const handleDeleteMilestone = async (goalId, milestone) => {
-    const goal = goals.find((g) => g.id === goalId);
-    if (!goal?.isOwner) {
-      showMessage("Only owner can delete");
-      return;
-    }
-    
-    const updatedMilestones = goal.milestones.filter(m => m.title !== milestone.title);
-    const newProgress = updatedMilestones.length ? 
-      Math.round((updatedMilestones.filter(m => m.completed).length / updatedMilestones.length) * 100) : 0;
-    
-    try {
-      // Optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goalId ? { 
-          ...g, 
-          milestones: updatedMilestones,
-          progress: newProgress
-        } : g
-      ));
-
-      await updateDoc(doc(db, "goals", goalId), { milestones: arrayRemove(milestone) });
-
-      if (goal.enableNotifications && !goal.archived && goal.progress < 100) {
-        await cancelGoalNotifications(goalId);
-        await scheduleGoalNotifications(
-          {
-            id: goal.id,
-            title: goal.title,
-            deadline: goal.dueDate,
-            milestones: updatedMilestones,
-            enableNotifications: true,
-            ...goal
-          },
-          [user.uid],
-          goal.sharedDocId ? true : false
-        );
-      }
-
-      const uids = await getSharedCollaborators(goalId);
-      if (uids.length) {
-        try {
-          await sendNotification(
-            uids,
-            `${user.displayName || user.email} removed milestone "${milestone.title}"`,
-            { 
-              goalId,
-              goalTitle: goal.title,
-              milestoneTitle: milestone.title,
-              type: NOTIFICATION_TYPES.GOAL_UPDATED,
-              screen: "Goals"
-            },
-            {
-              pushTitle: "🗑️ Milestone Removed",
-              type: NOTIFICATION_TYPES.GOAL_UPDATED
-            }
-          );
-        } catch (e) {
-          console.error("Notification error:", e);
-        }
-      }
-      showMessage("Milestone removed");
-    } catch (err) {
-      console.error(err);
-      showMessage("Remove failed");
-      // Revert optimistic update
-      setGoals(prev => prev.map(g => 
-        g.id === goalId ? goal : g
-      ));
-    }
-  };
-
-  // --- PROGRESS CIRCLE ---
-  const ProgressCircle = ({ progress, size = 70 }) => {
-    const radius = size / 2;
-    const strokeWidth = 5;
-    const circumference = 2 * Math.PI * radius;
-    const progressStroke = circumference - (progress / 100) * circumference;
-    const color = progress === 100 ? COLORS.success : progress > 50 ? COLORS.sage : COLORS.accentWarm;
-    
-    return (
-      <View style={[styles.progressCircleContainer, { width: size, height: size }]}>
-        <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-          <Circle 
-            stroke={COLORS.shadowDark} 
-            cx={radius} 
-            cy={radius} 
-            r={radius - strokeWidth / 2} 
-            strokeWidth={strokeWidth} 
-            fill="none" 
-          />
-          <Circle
-            stroke={color}
-            cx={radius}
-            cy={radius}
-            r={radius - strokeWidth / 2}
-            strokeWidth={strokeWidth}
-            fill="none"
-            strokeDasharray={circumference}
-            strokeDashoffset={progressStroke}
-            strokeLinecap="round"
-            transform={`rotate(-90 ${radius} ${radius})`}
-          />
-        </Svg>
-        <Text style={[styles.progressText, { color, fontSize: size / 5 }]}>{progress}%</Text>
-      </View>
-    );
-  };
-
-  // --- PRIORITY BADGE ---
-  const PriorityBadge = ({ priority }) => {
-    const color = PRIORITY_COLORS[priority] || COLORS.accentWarm;
-    const label = priority.charAt(0).toUpperCase() + priority.slice(1);
-    
-    return (
-      <View style={[styles.priorityBadge, { backgroundColor: color + '20' }]}>
-        <Text style={[styles.priorityText, { color }]}>{label}</Text>
-      </View>
-    );
-  };
-
-  // --- MILESTONE DUE DATE BADGE ---
-  const MilestoneDueDateBadge = ({ milestone }) => {
-    if (!milestone.dueDate) return null;
-    
-    let dueDate;
-    try {
-      dueDate = milestone.dueDate?.toDate ? milestone.dueDate.toDate() : createSafeDate(milestone.dueDate);
     } catch (error) {
-      console.error("Error parsing milestone due date:", error);
+      console.error("Toggle milestone error:", error);
+      Alert.alert("Error", "Failed to update milestone");
+    }
+  };
+
+  const handleAddMilestone = async (goalId) => {
+    if (!milestoneTitle.trim()) {
+      Alert.alert("Error", "Please enter a milestone title");
+      return;
+    }
+    
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    
+    try {
+      const newMilestone = {
+        id: `ms_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        title: milestoneTitle.trim(),
+        dueDate: milestoneDueDate.toISOString(),
+        completed: false,
+        createdAt: new Date().toISOString(),
+      };
+      
+      const updatedMilestones = [...(goal.milestones || []), newMilestone];
+      
+      await supabase.from("goals").update({ 
+        milestones: updatedMilestones 
+      }).eq("id", goalId);
+      
+      setMilestoneTitle("");
+      setMilestoneDueDate(new Date());
+      setShowMilestoneInput(false);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      showMessage("✅ Milestone added");
+    } catch (error) {
+      console.error("Add milestone error:", error);
+      Alert.alert("Error", "Failed to add milestone");
+    }
+  };
+
+  /* ================================================================================
+     👥 SHARE MODAL
+     ================================================================================ */
+
+  const openShareModal = async (goal) => {
+    setSelectedGoal(goal);
+    setShareCollaborators(goal.shared_with || []);
+    setShareEmail("");
+    setShareEmailError("");
+    setIsShareModalVisible(true);
+  };
+
+  // ✅ FIXED: Resolve email to user ID from profiles table
+  const resolveEmailToUid = async (email) => {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, username, email")
+        .eq("email", email.trim().toLowerCase())
+        .single();
+
+      if (error || !data) return null;
+      return {
+        uid: data.id,
+        email: email.trim().toLowerCase(),
+        displayName: data.username || email.split("@")[0],
+      };
+    } catch (error) {
+      console.error("Error resolving email:", error);
       return null;
     }
-    
-    const daysUntil = calculateDaysRemaining(dueDate);
-    
-    let color = COLORS.textSecondary;
-    if (daysUntil < 0) color = COLORS.danger;
-    else if (daysUntil <= 3) color = COLORS.warning;
-    
-    return (
-      <View style={[styles.milestoneDueDateBadge, { backgroundColor: color + '20' }]}>
-        <Ionicons name="calendar" size={12} color={color} />
-        <Text style={[styles.milestoneDueDateText, { color }]}>
-          {daysUntil < 0 ? 'Overdue' : `${daysUntil}d`}
-        </Text>
-      </View>
-    );
   };
 
-  // --- HEADER COMPONENT ---
-  const Header = () => (
-    <View style={styles.header}>
-      <View style={{ flex: 1 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <Text style={styles.headerTitle}>My Goals</Text>
-          <View style={styles.viewToggleContainer}>
-            <TouchableOpacity 
-              style={[styles.viewToggleButton, analyticsView === 'list' && styles.viewToggleActive]}
-              onPress={() => setAnalyticsView('list')}
-            >
-              <Ionicons name="list" size={20} color={analyticsView === 'list' ? '#fff' : COLORS.textSecondary} />
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.viewToggleButton, analyticsView === 'charts' && styles.viewToggleActive]}
-              onPress={() => setAnalyticsView('charts')}
-            >
-              <Ionicons name="stats-chart" size={20} color={analyticsView === 'charts' ? '#fff' : COLORS.textSecondary} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
+  const handleAddCollaborator = async () => {
+    if (!shareEmail.trim()) return;
+    
+    const userData = await resolveEmailToUid(shareEmail);
+    
+    if (!userData) {
+      setShareEmailError("User not found");
+      return;
+    }
+    
+    if (userData.uid === selectedGoal?.user_id) {
+      setShareEmailError("You are the owner");
+      return;
+    }
+    
+    if (shareCollaborators.some(c => c.uid === userData.uid)) {
+      setShareEmailError("Already added");
+      return;
+    }
+    
+    setShareCollaborators([...shareCollaborators, userData]);
+    setShareEmail("");
+    setShareEmailError("");
+  };
+
+  const handleRemoveCollaborator = (uid) => {
+    setShareCollaborators(shareCollaborators.filter(c => c.uid !== uid));
+  };
+
+  const handleShareGoal = async () => {
+    if (!selectedGoal) return;
+    
+    setLoading(true);
+    try {
+      const collaboratorUids = shareCollaborators.map(c => c.uid);
       
-      <View style={styles.headerActions}>
-        <TouchableOpacity 
-          style={styles.addButton} 
-          onPress={() => openGoalModal()}
-          accessibilityLabel="Create new goal"
-          accessibilityRole="button"
-          accessibilityHint="Opens form to create a new goal"
-        >
-          <Ionicons name="add" size={24} color="#fff" />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  // --- GOAL ITEM COMPONENT ---
-  const GoalItem = ({ goal }) => {
-    const isEditable = goal.isOwner;
-    const isExpanded = expandedGoalId === goal.id;
-    const isOverdue = goal.daysRemaining < 0 && goal.progress < 100;
-    const hasMilestones = goal.milestones && goal.milestones.length > 0;
-
-    return (
-      <View style={[
-        styles.goalItem, 
-        isOverdue && styles.goalItemOverdue,
-        goal.archived && styles.goalItemArchived,
-      ]}>
-        <TouchableOpacity 
-          onPress={() => setExpandedGoalId(isExpanded ? null : goal.id)}
-          activeOpacity={0.7}
-          style={styles.goalCardTouchable}
-        >
-          <View style={styles.goalHeader}>
-            <View style={styles.goalDetails}>
-              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
-                <Text style={styles.goalTitle}>{goal.title}</Text>
-                <PriorityBadge priority={goal.priority} />
-                {goal.enableNotifications && !goal.completed && !goal.archived && (
-                  <TouchableOpacity 
-                    style={styles.notificationToggle}
-                    onPress={() => handleToggleNotifications(goal)}
-                  >
-                    <Ionicons 
-                      name="notifications" 
-                      size={16} 
-                      color={COLORS.info} 
-                    />
-                  </TouchableOpacity>
-                )}
-              </View>
-              <Text style={styles.goalDescription} numberOfLines={2}>{goal.description}</Text>
-              
-              <View style={styles.metaRow}>
-                <View style={[styles.categoryBadge, { backgroundColor: CATEGORY_COLORS[goal.category] + '15' }]}>
-                  <Ionicons 
-                    name={CATEGORY_OPTIONS.find(c => c.value === goal.category)?.icon || "ellipsis-horizontal"} 
-                    size={12} 
-                    color={CATEGORY_COLORS[goal.category]} 
-                  />
-                  <Text style={[styles.categoryText, { color: CATEGORY_COLORS[goal.category] }]}>
-                    {CATEGORY_OPTIONS.find(c => c.value === goal.category)?.label || "Other"}
-                  </Text>
-                </View>
-                
-                {goal.recurrence.type !== 'none' && (
-                  <View style={[styles.recurrenceBadge, { backgroundColor: COLORS.recurring + '15' }]}>
-                    <Ionicons name="repeat" size={12} color={COLORS.recurring} />
-                    <Text style={[styles.recurrenceText, { color: COLORS.recurring }]}>
-                      {goal.recurrence.interval > 1 ? `${goal.recurrence.interval} ` : ''}
-                      {goal.recurrence.type}
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              <Text style={[styles.daysRemaining, isOverdue && styles.overdueText]}>
-                {isOverdue 
-                  ? `${Math.abs(goal.daysRemaining)} days overdue` 
-                  : `${goal.daysRemaining} days left`}
-              </Text>
-
-              {goal.tags && goal.tags.length > 0 && (
-                <View style={styles.tagsContainer}>
-                  {goal.tags.map((tag, idx) => (
-                    <View key={idx} style={[styles.tag, { backgroundColor: COLORS.accentBlush + '30' }]}>
-                      <Text style={[styles.tagText, { color: COLORS.accentBlush }]}>#{tag}</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              <Text style={styles.goalMeta}>
-                Due: {createSafeDate(goal.dueDate).toLocaleDateString()}
-                {goal.isOwner && <Text style={[styles.ownerBadge, { color: COLORS.accentWarm }]}> • Owned</Text>}
-                {goal.isCollaborator && <Text style={[styles.collaboratorBadge, { color: COLORS.accentBlush }]}> • Collaborating</Text>}
-              </Text>
-            </View>
-            
-            <View style={styles.timeTrackingControls}>
-              <ProgressCircle progress={goal.progress} size={60} />
-            </View>
-          </View>
-
-          {/* ADDED: Click hint message */}
-          <View style={styles.clickHintContainer}>
-            <Ionicons name="chevron-down" size={14} color={COLORS.textSecondary} />
-            <Text style={styles.clickHintText}>
-              {isExpanded 
-                ? "Tap to collapse milestones" 
-                : hasMilestones 
-                  ? `Tap to view ${goal.milestones.length} milestone${goal.milestones.length > 1 ? 's' : ''}`
-                  : isEditable 
-                    ? "Tap to add milestones"
-                    : "Tap to view goal details"}
-            </Text>
-          </View>
-        </TouchableOpacity>
-
-        {/* Milestones - Expanded View */}
-        {isExpanded && (
-          <View style={styles.milestonesContainer}>
-            <View style={styles.milestoneHeader}>
-              <Text style={styles.milestonesTitle}>Milestones</Text>
-              <Text style={styles.milestoneCount}>
-                {goal.milestones.filter(m => m.completed).length}/{goal.milestones.length}
-              </Text>
-            </View>
-            
-            {goal.milestones.length === 0 ? (
-              <View style={styles.emptyMilestonesState}>
-                <Ionicons name="flag-outline" size={32} color={COLORS.archived} />
-                <Text style={styles.emptyMilestonesText}>
-                  {isEditable 
-                    ? "No milestones yet. Add milestones below to track progress."
-                    : "No milestones added yet."}
-                </Text>
-              </View>
-            ) : (
-              goal.milestones.map((m, idx) => (
-                <View key={idx} style={styles.milestoneRow}>
-                  <TouchableOpacity
-                    style={styles.milestoneItem}
-                    onPress={isEditable ? () => handleToggleMilestone(goal.id, idx) : null}
-                    activeOpacity={isEditable ? 0.7 : 1}
-                  >
-                    <Ionicons
-                      name={m.completed ? "checkmark-circle" : "ellipse-outline"}
-                      size={20}
-                      color={m.completed ? COLORS.success : isEditable ? COLORS.textSecondary : COLORS.archived}
-                    />
-                    <View style={styles.milestoneContent}>
-                      <Text style={[styles.milestoneText, m.completed && styles.completedMilestoneText]}>
-                        {m.title}
-                      </Text>
-                      <MilestoneDueDateBadge milestone={m} />
-                    </View>
-                  </TouchableOpacity>
-                  {isEditable && (
-                    <TouchableOpacity
-                      style={styles.deleteMilestoneButton}
-                      onPress={() => handleDeleteMilestone(goal.id, m)}
-                    >
-                      <Ionicons name="trash-outline" size={18} color={COLORS.archived} />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              ))
-            )}
-
-            {isEditable && (
-              <KeyboardAvoidingView 
-                behavior={Platform.OS === "ios" ? "padding" : "height"}
-                keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
-              >
-                <View style={styles.milestoneInputContainer}>
-                  <View style={{ flex: 1 }}>
-                    <TextInput
-                      style={[styles.input, { marginRight: 10, marginBottom: 8 }]}
-                      placeholder="Add a new milestone"
-                      placeholderTextColor={COLORS.archived}
-                      value={newMilestoneTitle}
-                      onChangeText={setNewMilestoneTitle}
-                    />
-                    <TouchableOpacity 
-                      style={styles.datePickerButton} 
-                      onPress={() => setShowMilestoneDatePicker(true)}
-                    >
-                      <Ionicons name="calendar-outline" size={16} color={COLORS.sage} />
-                      <Text style={styles.datePickerText}>
-                        {newMilestoneDueDate.toLocaleDateString()}
-                      </Text>
-                    </TouchableOpacity>
-                    {showMilestoneDatePicker && (
-                      <DateTimePicker 
-                        value={newMilestoneDueDate} 
-                        mode="date" 
-                        onChange={handleMilestoneDateChange} 
-                      />
-                    )}
-                  </View>
-                  <TouchableOpacity
-                    style={[styles.milestoneAddButton, { backgroundColor: COLORS.sage }]}
-                    onPress={() => {
-                      handleAddMilestone(goal.id, newMilestoneTitle, newMilestoneDueDate);
-                      setNewMilestoneTitle("");
-                      setNewMilestoneDueDate(new Date());
-                    }}
-                  >
-                    <Ionicons name="add" size={24} color="#fff" />
-                  </TouchableOpacity>
-                </View>
-              </KeyboardAvoidingView>
-            )}
-          </View>
-        )}
-
-        {/* Actions */}
-        <View style={styles.goalActions}>
-          <TouchableOpacity
-            onPress={() => openGoalModal(goal)}
-            style={[styles.actionButton, !isEditable && styles.disabledAction]}
-          >
-            <Ionicons name="create-outline" size={22} color={isEditable ? COLORS.textSecondary : COLORS.archived} />
-          </TouchableOpacity>
-
-          {isEditable && (
-            <TouchableOpacity onPress={() => openShareModal(goal)} style={styles.actionButton}>
-              <Ionicons name="share-social-outline" size={22} color={COLORS.textSecondary} />
-            </TouchableOpacity>
-          )}
-
-          <TouchableOpacity
-            onPress={() => handleDeleteGoal(goal)}
-            style={[styles.actionButton, !isEditable && styles.disabledAction]}
-          >
-            <Ionicons name="trash-outline" size={22} color={isEditable ? COLORS.danger : COLORS.archived} />
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
+      await supabase.from("goals").update({
+        shared_with: collaboratorUids,
+        updated_at: new Date().toISOString(),
+      }).eq("id", selectedGoal.id);
+      
+      // Send notifications to collaborators
+      for (const collab of shareCollaborators) {
+        await sendNotification(
+          [collab.uid],
+          `${user.email || 'Someone'} shared "${selectedGoal.title}" with you`,
+          {
+            goalId: selectedGoal.id,
+            goalTitle: selectedGoal.title,
+            type: NOTIFICATION_TYPES.GOAL_INVITE,
+            screen: "Goals",
+          },
+          {
+            pushTitle: "🎯 Goal Shared",
+            sendPush: notificationPermission,
+          }
+        );
+      }
+      
+      showMessage("✅ Goal shared successfully");
+      setIsShareModalVisible(false);
+    } catch (error) {
+      console.error("Share error:", error);
+      Alert.alert("Error", "Failed to share goal");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // --- TEMPLATES MODAL ---
-  const TemplatesModal = () => (
-    <Modal visible={showTemplatesModal} transparent animationType="fade">
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={{ flex: 1 }}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.formModalContainer}>
-            <View style={styles.formModalHeader}>
-              <Text style={styles.formModalTitle}>Goal Templates</Text>
-              <TouchableOpacity onPress={() => setShowTemplatesModal(false)}>
-                <Ionicons name="close" size={24} color={COLORS.textPrimary} />
-              </TouchableOpacity>
-            </View>
-            
-            <ScrollView>
-              <Text style={styles.label}>Create new goal from template</Text>
-              <View style={styles.filterOptions}>
-                <TouchableOpacity 
-                  style={styles.filterOption}
-                  onPress={() => {
-                    setIsFormModalVisible(true);
-                    setShowTemplatesModal(false);
-                  }}
-                >
-                  <Ionicons name="add-circle" size={20} color={COLORS.sage} />
-                  <Text style={styles.filterOptionText}>Create New Goal</Text>
-                </TouchableOpacity>
-              </View>
-              
-              <Text style={[styles.label, { marginTop: 20 }]}>Quick Templates</Text>
-              <View style={styles.filterOptions}>
-                <TouchableOpacity 
-                  style={styles.filterOption}
-                  onPress={() => {
-                    setGoalTitle("Daily Exercise");
-                    setGoalDescription("Complete 30 minutes of exercise daily");
-                    setSelectedCategory("health");
-                    setSelectedPriority("medium");
-                    setShowTemplatesModal(false);
-                    setIsFormModalVisible(true);
-                  }}
-                >
-                  <Ionicons name="fitness" size={20} color={COLORS.sage} />
-                  <Text style={styles.filterOptionText}>Daily Exercise Routine</Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity 
-                  style={styles.filterOption}
-                  onPress={() => {
-                    setGoalTitle("Learn New Skill");
-                    setGoalDescription("Spend 1 hour daily learning a new skill");
-                    setSelectedCategory("learning");
-                    setSelectedPriority("high");
-                    setShowTemplatesModal(false);
-                    setIsFormModalVisible(true);
-                  }}
-                >
-                  <Ionicons name="school" size={20} color={COLORS.sage} />
-                  <Text style={styles.filterOptionText}>Skill Learning</Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity 
-                  style={styles.filterOption}
-                  onPress={() => {
-                    setGoalTitle("Monthly Budget");
-                    setGoalDescription("Track and manage monthly expenses");
-                    setSelectedCategory("finance");
-                    setSelectedPriority("medium");
-                    setShowTemplatesModal(false);
-                    setIsFormModalVisible(true);
-                  }}
-                >
-                  <Ionicons name="cash" size={20} color={COLORS.sage} />
-                  <Text style={styles.filterOptionText}>Budget Planning</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-            
-            <TouchableOpacity 
-              style={[styles.saveButton, { backgroundColor: COLORS.accentBlush }]}
-              onPress={() => setShowTemplatesModal(false)}
-            >
-              <Text style={styles.saveButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
+  /* ================================================================================
+     📅 ADAPTIVE DATE/TIME PICKER HANDLERS
+     ================================================================================ */
+
+  const handleCustomNotificationPress = () => {
+    setTempNotifDate(formState.notificationTime || new Date());
+    setNotifPickerMode('date');
+    setShowNotifPicker(true);
+  };
+
+  const handleNotifPickerChange = (event, selectedDate) => {
+    if (Platform.OS === 'android') {
+      if (event.type === 'dismissed' || !selectedDate) {
+        setShowNotifPicker(false);
+        return;
+      }
+    }
+
+    if (notifPickerMode === 'date') {
+      setTempNotifDate(selectedDate || tempNotifDate);
+      
+      if (Platform.OS === 'android') {
+        setNotifPickerMode('time');
+      } else {
+        setNotifPickerMode('time');
+      }
+    } else {
+      const finalDate = selectedDate || tempNotifDate;
+      const currentDate = tempNotifDate;
+      
+      const combinedDateTime = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        finalDate.getHours(),
+        finalDate.getMinutes()
+      );
+      
+      formDispatch({ type: 'SET_NOTIFICATION_TIME', payload: combinedDateTime });
+      setShowNotifPicker(false);
+      setNotifPickerMode('date');
+      
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  /* ================================================================================
+     🎨 RENDER
+     ================================================================================ */
+
+  const headerHeight = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [Platform.OS === 'ios' ? 140 : 120, 100],
+    extrapolate: 'clamp',
+  });
+
+  const headerTitleSize = scrollY.interpolate({
+    inputRange: [0, 100],
+    outputRange: [32, 24],
+    extrapolate: 'clamp',
+  });
 
   return (
-    <View style={styles.container}>
-      <Header />
+    <View style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundBase} />
       
-      {analyticsView === 'charts' ? (
-        <ScrollView style={styles.goalsList}>
-          {/* ADDED STATS TO PROGRESS OVERVIEW */}
-          <View style={styles.chartContainer}>
-            <Text style={styles.chartTitle}>Progress Overview</Text>
-            <View style={styles.progressGrid}>
-              <View style={styles.progressStat}>
-                <Text style={styles.progressStatNumber}>{stats.total}</Text>
-                <Text style={styles.progressStatLabel}>Total</Text>
+      {/* Animated Header with purple gradient */}
+      <Animated.View style={[styles.header, { height: headerHeight }]}>
+        <LinearGradient
+          colors={['#F2EDF8', '#EAE1F3', '#DDD0EC']}
+          style={StyleSheet.absoluteFill}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        />
+        
+        <View style={styles.headerContent}>
+          <View style={styles.headerTop}>
+            <View>
+              <Animated.Text style={[styles.headerTitle, { fontSize: headerTitleSize }]}>
+                Goals
+              </Animated.Text>
+              <Text style={styles.headerSubtitle}>
+                {stats.active} active • {stats.overdue} overdue
+              </Text>
+            </View>
+            
+            <View style={styles.headerRight}>
+              <View style={styles.viewModeToggle}>
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'list' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('list')}
+                >
+                  <Ionicons 
+                    name="list" 
+                    size={20} 
+                    color={viewMode === 'list' ? COLORS.accentBlush : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'calendar' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('calendar')}
+                >
+                  <Ionicons 
+                    name="calendar" 
+                    size={20} 
+                    color={viewMode === 'calendar' ? COLORS.accentBlush : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.viewModeButton, viewMode === 'analytics' && styles.viewModeButtonActive]}
+                  onPress={() => setViewMode('analytics')}
+                >
+                  <Ionicons 
+                    name="stats-chart" 
+                    size={20} 
+                    color={viewMode === 'analytics' ? COLORS.accentBlush : COLORS.textTertiary} 
+                  />
+                </TouchableOpacity>
               </View>
-              <View style={styles.progressStat}>
-                <Text style={[styles.progressStatNumber, { color: COLORS.success }]}>{stats.completed}</Text>
-                <Text style={styles.progressStatLabel}>Completed</Text>
+              
+              <TouchableOpacity 
+                style={styles.addButton}
+                onPress={() => { formDispatch({ type: 'RESET' }); setIsFormVisible(true); }}
+              >
+                <LinearGradient
+                  colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                  style={styles.addButtonGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                >
+                  <Ionicons name="add" size={24} color="white" />
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+          
+          {/* Search Bar */}
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={18} color={COLORS.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search goals..."
+              placeholderTextColor={COLORS.textTertiary}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery ? (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Ionicons name="close-circle" size={18} color={COLORS.textTertiary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </Animated.View>
+      
+      {/* Category Filters */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.categoryScroll}
+        contentContainerStyle={styles.categoryContainer}
+      >
+        <TouchableOpacity
+          style={[
+            styles.categoryFilter,
+            selectedCategory === 'all' && styles.categoryFilterActive,
+          ]}
+          onPress={() => {
+            setSelectedCategory('all');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+        >
+          <Text
+            style={[
+              styles.categoryFilterText,
+              selectedCategory === 'all' && styles.categoryFilterTextActive,
+            ]}
+          >
+            All Goals
+          </Text>
+        </TouchableOpacity>
+        
+        {Object.entries(CATEGORY_CONFIG).map(([key, config]) => (
+          <TouchableOpacity
+            key={key}
+            style={[
+              styles.categoryFilter,
+              { backgroundColor: selectedCategory === key ? config.color : COLORS.card },
+              selectedCategory === key && styles.categoryFilterActive,
+            ]}
+            onPress={() => {
+              setSelectedCategory(key);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Ionicons
+              name={config.icon}
+              size={16}
+              color={selectedCategory === key ? 'white' : config.color}
+            />
+            <Text
+              style={[
+                styles.categoryFilterText,
+                { color: selectedCategory === key ? 'white' : config.color },
+              ]}
+            >
+              {config.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      
+      {/* Calendar View */}
+      {viewMode === 'calendar' && (
+        <View style={styles.calendarView}>
+          <MiniCalendar
+            goals={goals}
+            selectedDate={selectedDate}
+            onSelectDate={setSelectedDate}
+          />
+          
+          {selectedDate && (
+            <View style={styles.selectedDateHeader}>
+              <Text style={styles.selectedDateTitle}>
+                {selectedDate.toLocaleDateString('en-US', { 
+                  weekday: 'long', 
+                  month: 'long', 
+                  day: 'numeric' 
+                })}
+              </Text>
+              <TouchableOpacity onPress={() => setSelectedDate(null)}>
+                <Ionicons name="close-circle" size={20} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      )}
+      
+      {/* Analytics View - StatsCard only appears here */}
+      {viewMode === 'analytics' && (
+        <ScrollView style={styles.analyticsView} showsVerticalScrollIndicator={false}>
+          <StatsCard stats={stats} />
+          
+          <View style={styles.analyticsCard}>
+            <Text style={styles.analyticsTitle}>Progress Overview</Text>
+            <View style={styles.analyticsGrid}>
+              <View style={styles.analyticsItem}>
+                <ProgressRing progress={stats.completionRate} size={80} />
+                <Text style={styles.analyticsLabel}>Completion Rate</Text>
               </View>
-              <View style={styles.progressStat}>
-                <Text style={[styles.progressStatNumber, { color: COLORS.sage }]}>{stats.inProgress}</Text>
-                <Text style={styles.progressStatLabel}>Active</Text>
-              </View>
-              <View style={styles.progressStat}>
-                <Text style={[styles.progressStatNumber, { color: COLORS.danger }]}>{stats.overdue}</Text>
-                <Text style={styles.progressStatLabel}>Overdue</Text>
-              </View>
-              <View style={styles.progressStat}>
-                <Text style={[styles.progressStatNumber, { color: COLORS.archived }]}>{stats.archived}</Text>
-                <Text style={styles.progressStatLabel}>Archived</Text>
+              
+              <View style={styles.analyticsStats}>
+                <View style={styles.analyticsStatRow}>
+                  <View style={[styles.analyticsDot, { backgroundColor: COLORS.sage }]} />
+                  <Text style={styles.analyticsStatLabel}>Completed</Text>
+                  <Text style={styles.analyticsStatValue}>{stats.completed}</Text>
+                </View>
+                <View style={styles.analyticsStatRow}>
+                  <View style={[styles.analyticsDot, { backgroundColor: COLORS.accentWarm }]} />
+                  <Text style={styles.analyticsStatLabel}>Active</Text>
+                  <Text style={styles.analyticsStatValue}>{stats.active}</Text>
+                </View>
+                <View style={styles.analyticsStatRow}>
+                  <View style={[styles.analyticsDot, { backgroundColor: COLORS.danger }]} />
+                  <Text style={styles.analyticsStatLabel}>Overdue</Text>
+                  <Text style={styles.analyticsStatValue}>{stats.overdue}</Text>
+                </View>
               </View>
             </View>
           </View>
           
-          <View style={styles.chartContainer}>
-            <Text style={styles.chartTitle}>Performance Metrics</Text>
-            <View style={styles.progressGrid}>
-              <View style={styles.progressStat}>
-                <Text style={styles.progressStatNumber}>{stats.avgProgress}%</Text>
-                <Text style={styles.progressStatLabel}>Avg Progress</Text>
-              </View>
-              <View style={styles.progressStat}>
-                <Text style={styles.progressStatNumber}>{stats.totalTimeSpent}h</Text>
-                <Text style={styles.progressStatLabel}>Total Time</Text>
-              </View>
-              <View style={styles.progressStat}>
-                <Text style={styles.progressStatNumber}>{stats.completed}/{stats.total}</Text>
-                <Text style={styles.progressStatLabel}>Completion Rate</Text>
-              </View>
-            </View>
-          </View>
-          
-          <View style={styles.chartContainer}>
-            <Text style={styles.chartTitle}>Goals by Category</Text>
-            <View style={styles.categoryStats}>
-              {Object.entries(stats.categoryStats || {}).map(([category, data]) => (
-                <View key={category} style={styles.categoryStatItem}>
+          <View style={styles.analyticsCard}>
+            <Text style={styles.analyticsTitle}>Category Breakdown</Text>
+            {Object.entries(CATEGORY_CONFIG).map(([key, config]) => {
+              const categoryGoals = goals.filter(g => g.category === key);
+              const total = categoryGoals.length;
+              const completed = categoryGoals.filter(g => g.progress === 100).length;
+              const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+              
+              if (total === 0) return null;
+              
+              return (
+                <View key={key} style={styles.categoryStatRow}>
                   <View style={styles.categoryStatHeader}>
-                    <Ionicons 
-                      name={CATEGORY_OPTIONS.find(c => c.value === category)?.icon || "ellipsis-horizontal"} 
-                      size={16} 
-                      color={CATEGORY_COLORS[category] || COLORS.textSecondary} 
-                    />
-                    <Text style={[styles.categoryStatName, { color: CATEGORY_COLORS[category] || COLORS.textPrimary }]}>
-                      {CATEGORY_OPTIONS.find(c => c.value === category)?.label || category}
+                    <Ionicons name={config.icon} size={16} color={config.color} />
+                    <Text style={[styles.categoryStatName, { color: config.color }]}>
+                      {config.label}
+                    </Text>
+                    <Text style={styles.categoryStatCount}>
+                      {completed}/{total}
                     </Text>
                   </View>
                   <View style={styles.categoryStatBar}>
                     <View 
                       style={[
-                        styles.categoryStatFill, 
-                        { 
-                          width: `${(data.completed / data.total) * 100}%`,
-                          backgroundColor: CATEGORY_COLORS[category] || COLORS.sage
-                        }
+                        styles.categoryStatFill,
+                        { width: `${percentage}%`, backgroundColor: config.color }
                       ]} 
                     />
                   </View>
-                  <Text style={styles.categoryStatCount}>
-                    {data.completed}/{data.total} ({data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0}%)
-                  </Text>
                 </View>
-              ))}
-            </View>
+              );
+            })}
           </View>
           
-          <TouchableOpacity 
-            style={[styles.saveButton, { margin: 20 }]}
-            onPress={() => setAnalyticsView('list')}
+          <TouchableOpacity
+            style={styles.backToListButton}
+            onPress={() => setViewMode('list')}
           >
-            <Text style={styles.saveButtonText}>Back to List View</Text>
+            <Text style={styles.backToListText}>Back to List</Text>
           </TouchableOpacity>
         </ScrollView>
-      ) : (
-        <>
-          {/* Search and Filters */}
-          <View style={styles.searchContainer}>
-            <View style={styles.searchBox}>
-              <Ionicons name="search" size={20} color={COLORS.textSecondary} />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Search goals..."
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                placeholderTextColor={COLORS.archived}
-              />
-            </View>
-            <TouchableOpacity 
-              style={[styles.filterButton, showArchived && styles.filterButtonActive]}
-              onPress={() => setShowArchived(!showArchived)}
-            >
-              <Ionicons name={showArchived ? "archive" : "archive-outline"} size={20} color={showArchived ? COLORS.sage : COLORS.textPrimary} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.filterButton} onPress={() => setShowFiltersModal(true)}>
-              <Ionicons name="options" size={20} color={COLORS.textPrimary} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Goals List */}
-          <ScrollView 
-            contentContainerStyle={styles.scrollContent} 
-            style={styles.goalsList}
-            showsVerticalScrollIndicator={false}
-          >
-            {filteredGoals.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="flag-outline" size={64} color={COLORS.archived} />
-                <Text style={styles.emptyListText}>
-                  {searchQuery || filterCategory !== "all" || filterPriority !== "all" 
-                    ? "No goals match your filters" 
-                    : showArchived 
-                      ? "No archived goals"
-                      : "No goals yet. Tap + to create one."}
-                </Text>
-              </View>
-            ) : (
-              filteredGoals.map((goal) => (
-                <GoalItem key={goal.id} goal={goal} />
-              ))
-            )}
-          </ScrollView>
-        </>
       )}
-
-      {/* Create/Edit Modal */}
-      {/* ==================== MODERN GOAL MODAL ==================== */}
-      <Modal visible={isFormModalVisible} transparent animationType="fade">
-        <KeyboardAvoidingView 
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ flex: 1 }}
+      
+      {/* Main Content - Goals List */}
+      {viewMode !== 'analytics' && (
+        <Animated.ScrollView
+          style={styles.goalsList}
+          contentContainerStyle={styles.goalsListContent}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: false }
+          )}
+          scrollEventThrottle={16}
+          showsVerticalScrollIndicator={false}
         >
-          <View style={styles.modernModalOverlay}>
-            {/* Blurred Background */}
-            <View style={styles.modernModalBlur} />
-            
-            <View style={styles.modernModalContainer}>
-              {/* Header with Progress */}
-              <View style={styles.modernModalHeader}>
-                <TouchableOpacity 
-                  onPress={() => {
-                    if (formStep > 1) {
-                      animateToStep(formStep - 1);
-                    } else {
-                      setIsFormModalVisible(false);
-                    }
-                  }}
-                  style={styles.modernBackButton}
-                >
-                  <Ionicons 
-                    name={formStep === 1 ? "close" : "arrow-back"} 
-                    size={24} 
-                    color={COLORS.textPrimary} 
-                  />
-                </TouchableOpacity>
-                
-                <View style={styles.modernHeaderCenter}>
-                  <Text style={styles.modernModalTitle}>
-                    {isEditing ? "Edit Goal" : "Create Goal"}
-                  </Text>
-                  <Text style={styles.modernModalStepText}>
-                    Step {formStep} of 4
-                  </Text>
-                </View>
-                
-                <View style={{ width: 40 }} />
-              </View>
-              
-              {/* Progress Bar */}
-              <View style={styles.modernProgressContainer}>
-                <View style={styles.modernProgressBackground}>
-                  <Animated.View 
-                    style={[
-                      styles.modernProgressFill,
-                      { width: `${formProgress}%` }
-                    ]}
-                  />
-                </View>
-                <View style={styles.modernStepDots}>
-                  {[1, 2, 3, 4].map((step) => (
-                    <View 
-                      key={step} 
-                      style={[
-                        styles.modernStepDot,
-                        step <= formStep && styles.modernStepDotActive
-                      ]}
-                    />
-                  ))}
-                </View>
-              </View>
-              
-              {/* Animated Content Container */}
-              <Animated.View 
-                style={[
-                  styles.modernContentContainer,
-                  {
-                    opacity: fadeAnim,
-                    transform: [{ translateX: slideAnim }]
-                  }
-                ]}
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={COLORS.accentBlush} />
+              <Text style={styles.loadingText}>Loading your goals...</Text>
+            </View>
+          ) : filteredGoals.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="flag-outline" size={64} color={COLORS.textTertiary} />
+              <Text style={styles.emptyTitle}>No goals found</Text>
+              <Text style={styles.emptyText}>
+                {searchQuery 
+                  ? "Try a different search" 
+                  : selectedDate 
+                    ? "No goals scheduled for this day"
+                    : selectedCategory !== 'all'
+                      ? `No ${CATEGORY_CONFIG[selectedCategory]?.label.toLowerCase()} goals`
+                      : "Create your first goal to get started"}
+              </Text>
+              <TouchableOpacity
+                style={styles.emptyButton}
+                onPress={() => { formDispatch({ type: 'RESET' }); setIsFormVisible(true); }}
               >
-                {/* STEP 1: Basic Info */}
-                {formStep === 1 && (
-                  <ScrollView style={styles.modernStepContent} showsVerticalScrollIndicator={false}>
-                    <View style={styles.modernStepHeader}>
-                      <View style={styles.modernIconCircle}>
-                        <Ionicons name="bulb-outline" size={32} color={COLORS.accentWarm} />
-                      </View>
-                      <Text style={styles.modernStepTitle}>What's your goal?</Text>
-                      <Text style={styles.modernStepSubtitle}>
-                        Give your goal a clear and inspiring name
-                      </Text>
-                    </View>
-                    
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Goal Title *</Text>
-                      <View style={styles.modernInputWrapper}>
-                        <Ionicons name="flag-outline" size={20} color={COLORS.sage} style={styles.modernInputIcon} />
-                        <TextInput 
-                          style={styles.modernInput}
-                          placeholder="e.g., Run a marathon, Learn Spanish..." 
-                          value={goalTitle} 
-                          onChangeText={setGoalTitle}
-                          placeholderTextColor={COLORS.textSecondary + '80'}
-                          autoFocus
-                          maxLength={120}
-                        />
-                      </View>
-                    </View>
-                    
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Description (optional)</Text>
-                      <View style={[styles.modernInputWrapper, styles.modernTextArea]}>
-                        <TextInput
-                          style={[styles.modernInput, { height: 100, textAlignVertical: 'top' }]}
-                          placeholder="Why is this goal important to you?"
-                          value={goalDescription}
-                          onChangeText={setGoalDescription}
-                          multiline
-                          placeholderTextColor={COLORS.textSecondary + '80'}
-                          maxLength={500}
-                        />
-                      </View>
-                    </View>
-                    
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Priority Level</Text>
-                      <View style={styles.modernPriorityGrid}>
-                        {PRIORITY_OPTIONS.map((priority) => (
-                          <TouchableOpacity
-                            key={priority.value}
-                            style={[
-                              styles.modernPriorityCard,
-                              selectedPriority === priority.value && [
-                                styles.modernPriorityCardActive,
-                                { borderColor: priority.color, backgroundColor: priority.color + '15' }
-                              ]
-                            ]}
-                            onPress={() => {
-                              setSelectedPriority(priority.value);
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            }}
-                          >
-                            <View style={[
-                              styles.modernPriorityIcon,
-                              { backgroundColor: priority.color + '20' }
-                            ]}>
-                              <Ionicons 
-                                name={
-                                  priority.value === 'high' ? 'flame' :
-                                  priority.value === 'medium' ? 'sunny' : 'leaf'
-                                }
-                                size={24} 
-                                color={priority.color} 
-                              />
-                            </View>
-                            <Text style={[
-                              styles.modernPriorityText,
-                              selectedPriority === priority.value && { 
-                                color: priority.color,
-                                fontWeight: '700'
-                              }
-                            ]}>
-                              {priority.label}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                  </ScrollView>
-                )}
-                
-                {/* STEP 2: Category & Timeline */}
-                {formStep === 2 && (
-                  <ScrollView style={styles.modernStepContent} showsVerticalScrollIndicator={false}>
-                    <View style={styles.modernStepHeader}>
-                      <View style={styles.modernIconCircle}>
-                        <Ionicons name="calendar-outline" size={32} color={COLORS.sage} />
-                      </View>
-                      <Text style={styles.modernStepTitle}>When & What?</Text>
-                      <Text style={styles.modernStepSubtitle}>
-                        Set your timeline and category
-                      </Text>
-                    </View>
-                    
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Due Date *</Text>
-                      <TouchableOpacity 
-                        style={styles.modernDateButton}
-                        onPress={() => setShowDatePicker(true)}
-                      >
-                        <View style={styles.modernDateButtonContent}>
-                          <View style={styles.modernDateIcon}>
-                            <Ionicons name="calendar" size={24} color={COLORS.sage} />
-                          </View>
-                          <View style={styles.modernDateTextContainer}>
-                            <Text style={styles.modernDateLabel}>Target Date</Text>
-                            <Text style={styles.modernDateValue}>
-                              {selectedDate.toLocaleDateString('en-US', { 
-                                weekday: 'short',
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                              })}
-                            </Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
-                        </View>
-                      </TouchableOpacity>
-                      {showDatePicker && (
-                        <DateTimePicker 
-                          value={selectedDate} 
-                          mode="date" 
-                          onChange={handleDateChange}
-                          minimumDate={new Date()}
-                          textColor={COLORS.textPrimary}
-                          accentColor={COLORS.sage}
-                          themeVariant="light"
-                        />
-                      )}
-                    </View>
-                    
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Category</Text>
-                      <View style={styles.modernCategoryGrid}>
-                        {CATEGORY_OPTIONS.map((category) => (
-                          <TouchableOpacity
-                            key={category.value}
-                            style={[
-                              styles.modernCategoryCard,
-                              selectedCategory === category.value && [
-                                styles.modernCategoryCardActive,
-                                { borderColor: category.color, backgroundColor: category.color + '10' }
-                              ]
-                            ]}
-                            onPress={() => {
-                              setSelectedCategory(category.value);
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            }}
-                          >
-                            <Ionicons 
-                              name={category.icon} 
-                              size={28} 
-                              color={selectedCategory === category.value ? category.color : COLORS.textSecondary} 
-                            />
-                            <Text style={[
-                              styles.modernCategoryText,
-                              selectedCategory === category.value && { 
-                                color: category.color,
-                                fontWeight: '600'
-                              }
-                            ]}>
-                              {category.label}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                    
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Estimated Time (optional)</Text>
-                      <View style={styles.modernInputWrapper}>
-                        <Ionicons name="time-outline" size={20} color={COLORS.sage} style={styles.modernInputIcon} />
-                        <TextInput
-                          style={styles.modernInput}
-                          placeholder="How many hours will this take?"
-                          value={estimatedHours}
-                          onChangeText={setEstimatedHours}
-                          keyboardType="numeric"
-                          placeholderTextColor={COLORS.textSecondary + '80'}
-                        />
-                        <Text style={styles.modernInputSuffix}>hours</Text>
-                      </View>
-                    </View>
-                  </ScrollView>
-                )}
-                
-                {/* STEP 3: Milestones & Tags */}
-                {formStep === 3 && (
-                  <ScrollView style={styles.modernStepContent} showsVerticalScrollIndicator={false}>
-                    <View style={styles.modernStepHeader}>
-                      <View style={styles.modernIconCircle}>
-                        <Ionicons name="trail-sign-outline" size={32} color={COLORS.accentBlush} />
-                      </View>
-                      <Text style={styles.modernStepTitle}>Break it down</Text>
-                      <Text style={styles.modernStepSubtitle}>
-                        Add milestones and tags to track progress
-                      </Text>
-                    </View>
-                    
-                    {/* Milestones */}
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Milestones (optional)</Text>
-                      
-                      {goalMilestones.length > 0 && (
-                        <View style={styles.modernMilestonesList}>
-                          {goalMilestones.map((milestone, index) => (
-                            <View key={index} style={styles.modernMilestoneCard}>
-                              <TouchableOpacity
-                                style={styles.modernMilestoneCheck}
-                                onPress={() => handleToggleMilestoneInForm(index)}
-                              >
-                                <Ionicons
-                                  name={milestone.completed ? "checkmark-circle" : "ellipse-outline"}
-                                  size={24}
-                                  color={milestone.completed ? COLORS.success : COLORS.textSecondary}
-                                />
-                              </TouchableOpacity>
-                              <View style={styles.modernMilestoneContent}>
-                                <Text style={[
-                                  styles.modernMilestoneTitle,
-                                  milestone.completed && styles.modernMilestoneTitleCompleted
-                                ]}>
-                                  {milestone.title}
-                                </Text>
-                                {milestone.dueDate && (
-                                  <Text style={styles.modernMilestoneDate}>
-                                    <Ionicons name="calendar-outline" size={12} color={COLORS.textSecondary} />
-                                    {' '}{createSafeDate(milestone.dueDate).toLocaleDateString()}
-                                  </Text>
-                                )}
-                              </View>
-                              <TouchableOpacity
-                                onPress={() => handleRemoveMilestoneInForm(index)}
-                                style={styles.modernMilestoneDelete}
-                              >
-                                <Ionicons name="close-circle" size={20} color={COLORS.danger} />
-                              </TouchableOpacity>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-                      
-                      {/* Add Milestone */}
-                      <View style={styles.modernAddMilestoneContainer}>
-                        <View style={styles.modernInputWrapper}>
-                          <Ionicons name="add-circle-outline" size={20} color={COLORS.sage} style={styles.modernInputIcon} />
-                          <TextInput
-                            style={styles.modernInput}
-                            placeholder="Add a milestone..."
-                            value={newMilestoneTitle}
-                            onChangeText={setNewMilestoneTitle}
-                            placeholderTextColor={COLORS.textSecondary + '80'}
-                          />
-                        </View>
-                        <TouchableOpacity 
-                          style={styles.modernMilestoneDateButton}
-                          onPress={() => setShowMilestoneDatePicker(true)}
-                        >
-                          <Ionicons name="calendar-outline" size={16} color={COLORS.sage} />
-                        </TouchableOpacity>
-                        <TouchableOpacity 
-                          style={[
-                            styles.modernAddMilestoneButton,
-                            !newMilestoneTitle.trim() && styles.modernAddMilestoneButtonDisabled
-                          ]}
-                          onPress={handleAddMilestoneInForm}
-                          disabled={!newMilestoneTitle.trim()}
-                        >
-                          <Ionicons name="add" size={20} color="#FFF" />
-                        </TouchableOpacity>
-                      </View>
-                      {showMilestoneDatePicker && (
-                        <DateTimePicker 
-                          value={newMilestoneDueDate} 
-                          mode="date" 
-                          onChange={handleMilestoneDateChange}
-                          minimumDate={new Date()}
-                          maximumDate={selectedDate}
-                          textColor={COLORS.textPrimary}
-                          accentColor={COLORS.sage}
-                          themeVariant="light"
-                        />
-                      )}
-                    </View>
-                    
-                    {/* Tags */}
-                    <View style={styles.modernInputGroup}>
-                      <Text style={styles.modernLabel}>Tags (max 5)</Text>
-                      
-                      {tags.length > 0 && (
-                        <View style={styles.modernTagsContainer}>
-                          {tags.map((tag, idx) => (
-                            <View key={idx} style={styles.modernTag}>
-                              <Text style={styles.modernTagText}>#{tag}</Text>
-                              <TouchableOpacity onPress={() => handleRemoveTag(tag)}>
-                                <Ionicons name="close" size={16} color={COLORS.accentBlush} />
-                              </TouchableOpacity>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-                      
-                      <View style={styles.modernAddTagContainer}>
-                        <View style={styles.modernInputWrapper}>
-                          <Ionicons name="pricetag-outline" size={20} color={COLORS.sage} style={styles.modernInputIcon} />
-                          <TextInput
-                            style={styles.modernInput}
-                            placeholder="Add a tag..."
-                            value={tagInput}
-                            onChangeText={setTagInput}
-                            onSubmitEditing={handleAddTag}
-                            placeholderTextColor={COLORS.textSecondary + '80'}
-                          />
-                        </View>
-                        <TouchableOpacity 
-                          style={[
-                            styles.modernAddTagButton,
-                            (tags.length >= 5 || !tagInput.trim()) && styles.modernAddTagButtonDisabled
-                          ]}
-                          onPress={handleAddTag}
-                          disabled={tags.length >= 5 || !tagInput.trim()}
-                        >
-                          <Ionicons name="add" size={20} color="#FFF" />
-                        </TouchableOpacity>
-                      </View>
-                      {tags.length >= 5 && (
-                        <Text style={styles.modernHelperText}>Maximum tags reached</Text>
-                      )}
-                    </View>
-                  </ScrollView>
-                )}
-                
-                {/* STEP 4: Reminders & Advanced */}
-                {formStep === 4 && (
-                  <ScrollView style={styles.modernStepContent} showsVerticalScrollIndicator={false}>
-                    <View style={styles.modernStepHeader}>
-                      <View style={styles.modernIconCircle}>
-                        <Ionicons name="notifications-outline" size={32} color={COLORS.sage} />
-                      </View>
-                      <Text style={styles.modernStepTitle}>Stay on track</Text>
-                      <Text style={styles.modernStepSubtitle}>
-                        Set up reminders and advanced options
-                      </Text>
-                    </View>
-                    
-                    {/* Notifications Toggle */}
-                    <TouchableOpacity 
-                      style={styles.modernFeatureCard}
-                      onPress={() => {
-                        const newValue = !enableNotifications;
-                        setEnableNotifications(newValue);
-                        if (newValue) {
-                          const defaultTime = new Date(selectedDate.getTime() - DEFAULT_REMINDER_OFFSET);
-                          const now = new Date();
-                          if (defaultTime > now) {
-                            setNotificationTime(defaultTime);
-                            setTempNotificationTime(defaultTime);
-                          }
-                        }
-                        setNotificationTimeMode('date');
-                        setShowNotificationTimePicker(false);
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      }}
-                    >
-                      <View style={styles.modernFeatureIcon}>
-                        <Ionicons name="notifications" size={24} color={COLORS.sage} />
-                      </View>
-                      <View style={styles.modernFeatureContent}>
-                        <Text style={styles.modernFeatureTitle}>Reminders</Text>
-                        <Text style={styles.modernFeatureDescription}>
-                          Get notified before your deadline
-                        </Text>
-                      </View>
-                      <Switch
-                        value={enableNotifications}
-                        onValueChange={(value) => {
-                          setEnableNotifications(value);
-                          if (value) {
-                            const defaultTime = new Date(selectedDate.getTime() - DEFAULT_REMINDER_OFFSET);
-                            setNotificationTime(defaultTime);
-                            setTempNotificationTime(defaultTime);
-                          }
-                          setNotificationTimeMode('date');
-                          setShowNotificationTimePicker(false);
-                        }}
-                        trackColor={{ false: COLORS.border, true: COLORS.sage + '40' }}
-                        thumbColor={enableNotifications ? COLORS.sage : COLORS.textSecondary}
-                      />
-                    </TouchableOpacity>
-                    
-                    {enableNotifications && (
-                      <View style={styles.modernExpandedSection}>
-                        {/* Reminder Date */}
-                        <View style={styles.modernInputGroup}>
-                          <Text style={styles.modernLabel}>Reminder Date</Text>
-                          <TouchableOpacity 
-                            style={styles.modernReminderTimeButton}
-                            onPress={() => setShowNotificationDatePicker(true)}
-                          >
-                            <Ionicons name="calendar-outline" size={20} color={COLORS.sage} />
-                            <View style={styles.modernReminderTimeContent}>
-                              <Text style={styles.modernReminderTimeValue}>
-                                {notificationTime.toLocaleDateString('en-US', { 
-                                  weekday: 'short',
-                                  month: 'short', 
-                                  day: 'numeric',
-                                  year: 'numeric'
-                                })}
-                              </Text>
-                            </View>
-                            <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
-                          </TouchableOpacity>
-                          {showNotificationDatePicker && (
-                            <DateTimePicker 
-                              value={notificationTime}
-                              mode="date"
-                              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                              onChange={(event, date) => {
-                                if (Platform.OS === 'android') {
-                                  setShowNotificationDatePicker(false);
-                                }
-                                if (event?.type === "set" && date) {
-                                  const newDateTime = new Date(date);
-                                  newDateTime.setHours(notificationTime.getHours());
-                                  newDateTime.setMinutes(notificationTime.getMinutes());
-                                  
-                                  if (newDateTime >= selectedDate) {
-                                    showMessage("Reminder date must be before the due date");
-                                    return;
-                                  }
-                                  setNotificationTime(newDateTime);
-                                }
-                              }}
-                              minimumDate={new Date()}
-                              maximumDate={selectedDate}
-                              textColor={COLORS.textPrimary}
-                              accentColor={COLORS.sage}
-                              themeVariant="light"
-                            />
-                          )}
-                        </View>
-                        
-                        {/* Reminder Time */}
-                        <View style={styles.modernInputGroup}>
-                          <Text style={styles.modernLabel}>Reminder Time</Text>
-                          <TouchableOpacity 
-                            style={styles.modernReminderTimeButton}
-                            onPress={() => setShowNotificationTimePicker(true)}
-                          >
-                            <Ionicons name="time-outline" size={20} color={COLORS.sage} />
-                            <View style={styles.modernReminderTimeContent}>
-                              <Text style={styles.modernReminderTimeValue}>
-                                {notificationTime.toLocaleTimeString('en-US', { 
-                                  hour: 'numeric', 
-                                  minute: '2-digit',
-                                  hour12: true 
-                                })}
-                              </Text>
-                            </View>
-                            <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
-                          </TouchableOpacity>
-                          {showNotificationTimePicker && (
-                            <DateTimePicker 
-                              value={notificationTime}
-                              mode="time"
-                              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                              onChange={(event, date) => {
-                                if (Platform.OS === 'android') {
-                                  setShowNotificationTimePicker(false);
-                                }
-                                if (event?.type === "set" && date) {
-                                  const newDateTime = new Date(notificationTime);
-                                  newDateTime.setHours(date.getHours());
-                                  newDateTime.setMinutes(date.getMinutes());
-                                  newDateTime.setSeconds(0);
-                                  
-                                  if (newDateTime >= selectedDate) {
-                                    showMessage("Reminder time must be before the due date");
-                                    return;
-                                  }
-                                  setNotificationTime(newDateTime);
-                                }
-                              }}
-                              textColor={COLORS.textPrimary}
-                              accentColor={COLORS.sage}
-                              themeVariant="light"
-                            />
-                          )}
-                        </View>
-                        
-                        {/* Custom Message */}
-                        <View style={styles.modernInputGroup}>
-                          <Text style={styles.modernLabel}>Custom Message (optional)</Text>
-                          <View style={styles.modernInputWrapper}>
-                            <TextInput
-                              style={[styles.modernInput, { height: 60 }]}
-                              placeholder="Custom reminder message..."
-                              value={customNotificationMessage}
-                              onChangeText={setCustomNotificationMessage}
-                              multiline
-                              placeholderTextColor={COLORS.textSecondary + '80'}
-                            />
-                          </View>
-                        </View>
-                      </View>
-                    )}
-                    
-                    {/* Recurring Goal */}
-                    <TouchableOpacity 
-                      style={styles.modernFeatureCard}
-                      onPress={() => {
-                        setIsRecurring(!isRecurring);
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      }}
-                    >
-                      <View style={styles.modernFeatureIcon}>
-                        <Ionicons name="repeat" size={24} color={COLORS.recurring} />
-                      </View>
-                      <View style={styles.modernFeatureContent}>
-                        <Text style={styles.modernFeatureTitle}>Recurring Goal</Text>
-                        <Text style={styles.modernFeatureDescription}>
-                          Repeat this goal automatically
-                        </Text>
-                      </View>
-                      <Ionicons 
-                        name={isRecurring ? "checkmark-circle" : "ellipse-outline"} 
-                        size={28} 
-                        color={isRecurring ? COLORS.recurring : COLORS.textSecondary} 
-                      />
-                    </TouchableOpacity>
-                    
-                    {isRecurring && (
-                      <View style={styles.modernExpandedSection}>
-                        <View style={styles.modernRecurrenceGrid}>
-                          {RECURRENCE_OPTIONS.filter(opt => opt.value !== 'none').map((option) => (
-                            <TouchableOpacity
-                              key={option.value}
-                              style={[
-                                styles.modernRecurrenceCard,
-                                recurrenceType === option.value && styles.modernRecurrenceCardActive
-                              ]}
-                              onPress={() => setRecurrenceType(option.value)}
-                            >
-                              <Text style={[
-                                styles.modernRecurrenceText,
-                                recurrenceType === option.value && styles.modernRecurrenceTextActive
-                              ]}>
-                                {option.label}
-                              </Text>
-                            </TouchableOpacity>
-                          ))}
-                        </View>
-                        
-                        {recurrenceType !== 'none' && (
-                          <View style={styles.modernIntervalContainer}>
-                            <Text style={styles.modernIntervalLabel}>Repeat every</Text>
-                            <View style={styles.modernIntervalInputWrapper}>
-                              <TextInput
-                                style={styles.modernIntervalInput}
-                                value={recurrenceInterval.toString()}
-                                onChangeText={(text) => {
-                                  const num = parseInt(text) || 1;
-                                  setRecurrenceInterval(num > 0 ? num : 1);
-                                }}
-                                keyboardType="numeric"
-                              />
-                              <Text style={styles.modernIntervalUnit}>
-                                {recurrenceType === 'daily' ? 'day(s)' : 
-                                 recurrenceType === 'weekly' ? 'week(s)' : 
-                                 recurrenceType === 'monthly' ? 'month(s)' : 'year(s)'}
-                              </Text>
-                            </View>
-                          </View>
-                        )}
-                      </View>
-                    )}
-                    
-                    {/* Calendar Sync */}
-                    <TouchableOpacity 
-                      style={styles.modernFeatureCard}
-                      onPress={() => {
-                        setSyncToCalendar(!syncToCalendar);
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      }}
-                    >
-                      <View style={styles.modernFeatureIcon}>
-                        <Ionicons name="calendar" size={24} color={COLORS.info} />
-                      </View>
-                      <View style={styles.modernFeatureContent}>
-                        <Text style={styles.modernFeatureTitle}>Calendar Sync</Text>
-                        <Text style={styles.modernFeatureDescription}>
-                          Add to device calendar
-                        </Text>
-                      </View>
-                      <Switch
-                        value={syncToCalendar}
-                        onValueChange={setSyncToCalendar}
-                        trackColor={{ false: COLORS.border, true: COLORS.info + '40' }}
-                        thumbColor={syncToCalendar ? COLORS.info : COLORS.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  </ScrollView>
-                )}
-              </Animated.View>
-              
-              {/* Navigation Buttons */}
-              <View style={styles.modernModalFooter}>
-                {formStep < 4 ? (
-                  <TouchableOpacity 
-                    style={styles.modernNextButton}
-                    onPress={() => {
-                      if (formStep === 1 && !goalTitle.trim()) {
-                        showMessage("Please enter a goal title");
-                        return;
-                      }
-                      animateToStep(formStep + 1);
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    }}
-                  >
-                    <Text style={styles.modernNextButtonText}>Continue</Text>
-                    <Ionicons name="arrow-forward" size={20} color="#FFF" />
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity 
-                    style={styles.modernCreateButton}
-                    onPress={handleSaveGoal}
-                    disabled={loading}
-                  >
-                    {loading ? (
-                      <ActivityIndicator color="#FFF" />
-                    ) : (
-                      <>
-                        <Ionicons name="checkmark-circle" size={24} color="#FFF" />
-                        <Text style={styles.modernCreateButtonText}>
-                          {isEditing ? "Update Goal" : "Create Goal"}
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Filters Modal */}
-      <Modal visible={showFiltersModal} transparent animationType="slide">
-        <KeyboardAvoidingView 
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ flex: 1 }}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.formModalContainer}>
-              <View style={styles.formModalHeader}>
-                <Text style={styles.formModalTitle}>Filters & Sorting</Text>
-                <TouchableOpacity onPress={() => setShowFiltersModal(false)}>
-                  <Ionicons name="close" size={24} color={COLORS.textPrimary} />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView>
-                <Text style={styles.label}>Sort By</Text>
-                <View style={styles.filterOptions}>
-                  {[
-                    { value: "dueDate", label: "Due Date", icon: "calendar" },
-                    { value: "priority", label: "Priority", icon: "flag" },
-                    { value: "progress", label: "Progress", icon: "stats-chart" },
-                    { value: "title", label: "Title", icon: "text" },
-                  ].map((option) => (
-                    <TouchableOpacity
-                      key={option.value}
-                      style={[styles.filterOption, sortBy === option.value && styles.filterOptionSelected]}
-                      onPress={() => setSortBy(option.value)}
-                    >
-                      <Ionicons name={option.icon} size={18} color={sortBy === option.value ? COLORS.sage : COLORS.textSecondary} />
-                      <Text style={[styles.filterOptionText, sortBy === option.value && styles.filterOptionTextSelected]}>
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <Text style={styles.label}>Filter by Category</Text>
-                <View style={styles.filterOptions}>
-                  <TouchableOpacity
-                    style={[styles.filterOption, filterCategory === "all" && styles.filterOptionSelected]}
-                    onPress={() => setFilterCategory("all")}
-                  >
-                    <Ionicons name="apps" size={18} color={filterCategory === "all" ? COLORS.sage : COLORS.textSecondary} />
-                    <Text style={[styles.filterOptionText, filterCategory === "all" && styles.filterOptionTextSelected]}>
-                      All Categories
-                    </Text>
-                  </TouchableOpacity>
-                  {CATEGORY_OPTIONS.map((category) => (
-                    <TouchableOpacity
-                      key={category.value}
-                      style={[styles.filterOption, filterCategory === category.value && styles.filterOptionSelected]}
-                      onPress={() => setFilterCategory(category.value)}
-                    >
-                      <Ionicons name={category.icon} size={18} color={filterCategory === category.value ? category.color : COLORS.textSecondary} />
-                      <Text style={[styles.filterOptionText, filterCategory === category.value && styles.filterOptionTextSelected]}>
-                        {category.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <Text style={styles.label}>Filter by Priority</Text>
-                <View style={styles.filterOptions}>
-                  <TouchableOpacity
-                    style={[styles.filterOption, filterPriority === "all" && styles.filterOptionSelected]}
-                    onPress={() => setFilterPriority("all")}
-                  >
-                    <Text style={[styles.filterOptionText, filterPriority === "all" && styles.filterOptionTextSelected]}>
-                      All Priorities
-                    </Text>
-                  </TouchableOpacity>
-                  {PRIORITY_OPTIONS.map((priority) => (
-                    <TouchableOpacity
-                      key={priority.value}
-                      style={[styles.filterOption, filterPriority === priority.value && styles.filterOptionSelected]}
-                      onPress={() => setFilterPriority(priority.value)}
-                    >
-                      <View style={[styles.priorityDot, { backgroundColor: priority.color }]} />
-                      <Text style={[styles.filterOptionText, filterPriority === priority.value && styles.filterOptionTextSelected]}>
-                        {priority.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <TouchableOpacity 
-                  style={styles.toggleOption}
-                  onPress={() => setShowCompleted(!showCompleted)}
+                <LinearGradient
+                  colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                  style={styles.emptyButtonGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
                 >
-                  <Text style={styles.filterOptionText}>Show Completed Goals</Text>
-                  <Ionicons 
-                    name={showCompleted ? "checkmark-circle" : "ellipse-outline"} 
-                    size={24} 
-                    color={showCompleted ? COLORS.success : COLORS.textSecondary} 
-                  />
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                  style={[styles.saveButton, { backgroundColor: COLORS.accentBlush }]}
-                  onPress={() => {
-                    setFilterCategory("all");
-                    setFilterPriority("all");
-                    setSortBy("dueDate");
-                    setShowCompleted(true);
-                    setSearchQuery("");
-                    setShowArchived(false);
-                  }}
-                >
-                  <Text style={styles.saveButtonText}>Reset All Filters</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Share Modal */}
-      <Modal visible={shareModalVisible} transparent animationType="fade">
-        <KeyboardAvoidingView 
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ flex: 1 }}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.formModalContainer}>
-              <View style={styles.formModalHeader}>
-                <Text style={styles.formModalTitle}>Share Goal</Text>
-                <TouchableOpacity onPress={() => setShareModalVisible(false)}>
-                  <Ionicons name="close" size={24} color={COLORS.textPrimary} />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView style={{ maxHeight: "70%" }}>
-                <Text style={styles.label}>Goal</Text>
-                <Text style={{ marginBottom: 12, fontWeight: "600", color: COLORS.textPrimary }}>
-                  {shareGoal?.title}
-                </Text>
-
-                <Text style={styles.label}>Add collaborator (email)</Text>
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <TextInput
-                    style={[styles.input, { flex: 1 }]}
-                    placeholder="friend@example.com"
-                    value={shareEmail}
-                    onChangeText={setShareEmail}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                  />
-                  <TouchableOpacity 
-                    style={[styles.saveButton, { marginLeft: 8, paddingHorizontal: 12, marginTop: 0, backgroundColor: COLORS.accentBlush }]} 
-                    onPress={handleAddShareEmail}
-                    disabled={loading}
-                  >
-                    {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveButtonText}>Add</Text>}
-                  </TouchableOpacity>
-                </View>
-
-                {shareEmailError ? <Text style={styles.errorText}>{shareEmailError}</Text> : null}
-
-                <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 10 }}>
-                  {shareCollaborators.map((collab) => (
-                    <View key={collab.uid} style={[styles.emailPill, { backgroundColor: COLORS.accentBlush + '30' }]}>
-                      <Text style={[styles.emailPillText, { color: COLORS.accentBlush }]}>{collab.displayName || collab.email}</Text>
-                      <TouchableOpacity onPress={() => handleRemoveShareUid(collab.uid)} style={{ marginLeft: 6 }}>
-                        <Ionicons name="close-circle" size={16} color={COLORS.accentBlush} />
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                </View>
-              </ScrollView>
-
-              <TouchableOpacity style={[styles.saveButton, { backgroundColor: COLORS.textPrimary }]} onPress={handleSaveSharing} disabled={loading}>
-                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Share Goal</Text>}
+                  <Ionicons name="add" size={20} color="white" />
+                  <Text style={styles.emptyButtonText}>Create Goal</Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Export Modal */}
-      <Modal visible={showExportModal} transparent animationType="fade">
+          ) : (
+            filteredGoals.map(goal => (
+              <GoalCard
+                key={goal.id}
+                goal={goal}
+                onPress={() => {}}
+                onEdit={handleEditGoal}
+                onDelete={handleDeleteGoal}
+                onShare={openShareModal}
+                onToggleNotification={handleToggleNotification}
+                onToggleMilestone={handleToggleMilestone}
+                onAddMilestone={(goalId) => {
+                  setShowMilestoneInput(true);
+                  setSelectedGoal(goals.find(g => g.id === goalId));
+                }}
+                isExpanded={expandedGoalId === goal.id}
+                onExpand={(id) => setExpandedGoalId(expandedGoalId === id ? null : id)}
+              />
+            ))
+          )}
+          
+          {/* Add some bottom padding */}
+          <View style={{ height: 100 }} />
+        </Animated.ScrollView>
+      )}
+      
+      {/* Quick Add Bar - Only in list view */}
+      {viewMode === 'list' && !loading && (
+        <QuickAddBar onAdd={handleQuickAdd} />
+      )}
+      
+      {/* Milestone Input Modal */}
+      <Modal
+        visible={showMilestoneInput}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMilestoneInput(false)}
+      >
         <View style={styles.modalOverlay}>
-          <View style={styles.formModalContainer}>
-            <View style={styles.formModalHeader}>
-              <Text style={styles.formModalTitle}>Export Goals</Text>
-              <TouchableOpacity onPress={() => setShowExportModal(false)}>
+          <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.milestoneModal}>
+            <View style={styles.milestoneModalHeader}>
+              <Text style={styles.milestoneModalTitle}>Add Milestone</Text>
+              <TouchableOpacity onPress={() => setShowMilestoneInput(false)}>
                 <Ionicons name="close" size={24} color={COLORS.textPrimary} />
               </TouchableOpacity>
             </View>
             
-            <Text style={styles.label}>Select Export Format</Text>
-            <View style={styles.filterOptions}>
-              <TouchableOpacity style={styles.filterOption} onPress={handleExportGoals}>
-                <Ionicons name="document-text-outline" size={20} color={COLORS.sage} />
-                <Text style={styles.filterOptionText}>JSON Format</Text>
+            <Text style={styles.modalLabel}>Title</Text>
+            <View style={styles.modalInputContainer}>
+              <Ionicons name="flag-outline" size={20} color={COLORS.accentBlush} />
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Enter milestone title"
+                placeholderTextColor={COLORS.textTertiary}
+                value={milestoneTitle}
+                onChangeText={setMilestoneTitle}
+                autoFocus
+              />
+            </View>
+            
+            <Text style={styles.modalLabel}>Due Date (Optional)</Text>
+            <TouchableOpacity
+              style={styles.modalDateButton}
+              onPress={() => setShowMilestoneDatePicker(true)}
+            >
+              <Ionicons name="calendar-outline" size={20} color={COLORS.accentBlush} />
+              <Text style={styles.modalDateText}>
+                {milestoneDueDate.toLocaleDateString('en-US', { 
+                  month: 'short', 
+                  day: 'numeric', 
+                  year: 'numeric' 
+                })}
+              </Text>
+            </TouchableOpacity>
+            
+            {showMilestoneDatePicker && (
+              <DateTimePicker
+                value={milestoneDueDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, date) => {
+                  setShowMilestoneDatePicker(false);
+                  if (date) setMilestoneDueDate(date);
+                }}
+              />
+            )}
+            
+            <View style={styles.milestoneModalActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalCancelButton]}
+                onPress={() => setShowMilestoneInput(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.filterOption} onPress={() => showMessage("CSV export coming soon!")}>
-                <Ionicons name="document-outline" size={20} color={COLORS.textSecondary} />
-                <Text style={styles.filterOptionText}>CSV Format (Coming Soon)</Text>
+              
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalSaveButton]}
+                onPress={() => {
+                  handleAddMilestone(selectedGoal?.id);
+                }}
+              >
+                <Text style={styles.modalSaveText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
+      {/* Share Modal */}
+      <Modal
+        visible={isShareModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsShareModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.shareModal}>
+            <View style={styles.shareModalHeader}>
+              <Text style={styles.shareModalTitle}>Share Goal</Text>
+              <TouchableOpacity onPress={() => setIsShareModalVisible(false)}>
+                <Ionicons name="close" size={24} color={COLORS.textPrimary} />
               </TouchableOpacity>
             </View>
             
-            <TouchableOpacity style={[styles.saveButton, { backgroundColor: COLORS.accentBlush }]} onPress={() => setShowExportModal(false)}>
-              <Text style={styles.saveButtonText}>Cancel</Text>
+            <Text style={styles.shareGoalTitle}>{selectedGoal?.title}</Text>
+            
+            <Text style={styles.modalLabel}>Add Collaborator</Text>
+            <View style={styles.shareInputRow}>
+              <View style={styles.shareInputContainer}>
+                <Ionicons name="mail-outline" size={20} color={COLORS.accentBlush} />
+                <TextInput
+                  style={styles.shareInput}
+                  placeholder="friend@example.com"
+                  placeholderTextColor={COLORS.textTertiary}
+                  value={shareEmail}
+                  onChangeText={setShareEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.shareAddButton}
+                onPress={handleAddCollaborator}
+              >
+                <Ionicons name="add" size={24} color="white" />
+              </TouchableOpacity>
+            </View>
+            
+            {shareEmailError ? (
+              <Text style={styles.shareErrorText}>{shareEmailError}</Text>
+            ) : null}
+            
+            {shareCollaborators.length > 0 && (
+              <View style={styles.collaboratorsList}>
+                <Text style={styles.collaboratorsTitle}>Collaborators</Text>
+                {shareCollaborators.map(collab => (
+                  <View key={collab.uid} style={styles.collaboratorItem}>
+                    <View style={styles.collaboratorInfo}>
+                      <View style={styles.collaboratorAvatar}>
+                        <Text style={styles.collaboratorInitial}>
+                          {collab.displayName?.charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View>
+                        <Text style={styles.collaboratorName}>{collab.displayName}</Text>
+                        <Text style={styles.collaboratorEmail}>{collab.email}</Text>
+                      </View>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => handleRemoveCollaborator(collab.uid)}
+                    >
+                      <Ionicons name="close-circle" size={20} color={COLORS.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+            
+            <TouchableOpacity
+              style={styles.shareConfirmButton}
+              onPress={handleShareGoal}
+              disabled={loading || shareCollaborators.length === 0}
+            >
+              <LinearGradient
+                colors={[COLORS.accentBlush, COLORS.accentWarm]}
+                style={styles.shareConfirmGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+              >
+                {loading ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <>
+                    <Ionicons name="share-social" size={20} color="white" />
+                    <Text style={styles.shareConfirmText}>
+                      Share with {shareCollaborators.length} {shareCollaborators.length === 1 ? 'person' : 'people'}
+                    </Text>
+                  </>
+                )}
+              </LinearGradient>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+      
+      {/* Goal Form Modal - Complete redesign with purple theme */}
+      <Modal
+        visible={isFormVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setIsFormVisible(false)}
+      >
+        <View style={styles.formModalOverlay}>
+          <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
+          
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.formModalKeyboard}
+          >
+            <View style={styles.formModalContainer}>
+              {/* Drag handle so user knows this is a bottom sheet */}
+              <View style={styles.formModalDragHandle} />
 
-      {/* Templates Modal */}
-      <TemplatesModal />
-
-      {/* Toast Message */}
-      <Modal visible={showModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.messageModalContainer}>
-            <Text style={styles.modalText}>{modalMessage}</Text>
-          </View>
+              <View style={styles.formModalHeader}>
+                <View>
+                  <Text style={styles.formModalTitle}>
+                    {formState.isEditing ? "Edit Goal" : "New Goal"}
+                  </Text>
+                  <Text style={styles.formModalSubtitle}>
+                    {formState.isEditing ? "Update your goal details" : "What do you want to achieve?"}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => { setIsFormVisible(false); formDispatch({ type: 'RESET' }); }}
+                  style={styles.formModalClose}
+                >
+                  <Ionicons name="close" size={22} color={COLORS.textPrimary} />
+                </TouchableOpacity>
+              </View>
+              
+              <ScrollView 
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.formModalScroll}
+              >
+                {/* Title */}
+                <View style={styles.formSection}>
+                  <View style={styles.formLabelRow}>
+                    <Text style={styles.formLabel}>Title <Text style={styles.requiredStar}>*</Text></Text>
+                    <Text style={styles.formCounter}>{formState.title.length}/120</Text>
+                  </View>
+                  <View style={styles.formInputContainer}>
+                    <Ionicons name="flag-outline" size={20} color={COLORS.accentBlush} />
+                    <TextInput
+                      style={styles.formInput}
+                      placeholder="e.g., Run a marathon, Learn Spanish"
+                      placeholderTextColor={COLORS.textTertiary}
+                      value={formState.title}
+                      onChangeText={(text) => 
+                        formDispatch({ type: 'SET_FIELD', field: 'title', value: text })
+                      }
+                      maxLength={120}
+                    />
+                  </View>
+                </View>
+                
+                {/* Description */}
+                <View style={styles.formSection}>
+                  <View style={styles.formLabelRow}>
+                    <Text style={styles.formLabel}>Description</Text>
+                    <Text style={styles.formCounter}>{formState.description.length}/500</Text>
+                  </View>
+                  <View style={[styles.formInputContainer, styles.formTextArea]}>
+                    <Ionicons name="document-text-outline" size={20} color={COLORS.accentBlush} />
+                    <TextInput
+                      style={[styles.formInput, { minHeight: 80 }]}
+                      placeholder="What's your goal about?"
+                      placeholderTextColor={COLORS.textTertiary}
+                      value={formState.description}
+                      onChangeText={(text) => 
+                        formDispatch({ type: 'SET_FIELD', field: 'description', value: text })
+                      }
+                      multiline
+                      maxLength={500}
+                    />
+                  </View>
+                </View>
+                
+                {/* Due Date & Time */}
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Due Date & Time</Text>
+                  <View style={styles.formDateTimeRow}>
+                    <TouchableOpacity
+                      style={styles.formDateTimeButton}
+                      onPress={() => setShowDatePicker(true)}
+                    >
+                      <Ionicons name="calendar-outline" size={20} color={COLORS.accentBlush} />
+                      <Text style={styles.formDateTimeText}>
+                        {formState.dueDate.toLocaleDateString('en-US', { 
+                          month: 'short', 
+                          day: 'numeric' 
+                        })}
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity
+                      style={styles.formDateTimeButton}
+                      onPress={() => setShowTimePicker(true)}
+                    >
+                      <Ionicons name="time-outline" size={20} color={COLORS.accentBlush} />
+                      <Text style={styles.formDateTimeText}>
+                        {formState.dueTime.toLocaleTimeString([], { 
+                          hour: '2-digit', 
+                          minute: '2-digit' 
+                        })}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                
+                {/* Date Picker */}
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={formState.dueDate}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    minimumDate={new Date()}
+                    onChange={(event, date) => {
+                      setShowDatePicker(false);
+                      if (date) {
+                        formDispatch({ type: 'SET_DUE_DATE', payload: date });
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }
+                    }}
+                  />
+                )}
+                
+                {/* Time Picker */}
+                {showTimePicker && (
+                  <DateTimePicker
+                    value={formState.dueTime}
+                    mode="time"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={(event, time) => {
+                      setShowTimePicker(false);
+                      if (time) {
+                        formDispatch({ type: 'SET_DUE_TIME', payload: time });
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }
+                    }}
+                  />
+                )}
+                
+                {/* Category & Priority */}
+                <View style={styles.formRow}>
+                  <View style={[styles.formSection, { flex: 1, marginRight: 8 }]}>
+                    <Text style={styles.formLabel}>Category</Text>
+                    <ScrollView 
+                      horizontal 
+                      showsHorizontalScrollIndicator={false}
+                      style={{ flexGrow: 0 }}
+                    >
+                      <View style={styles.formChipGroup}>
+                        {Object.entries(CATEGORY_CONFIG).map(([key, config]) => (
+                          <TouchableOpacity
+                            key={key}
+                            style={[
+                              styles.formChip,
+                              { backgroundColor: config.lightColor },
+                              formState.category === key && { 
+                                backgroundColor: config.color,
+                                borderWidth: 0,
+                              },
+                            ]}
+                            onPress={() => 
+                              formDispatch({ type: 'SET_FIELD', field: 'category', value: key })
+                            }
+                          >
+                            <Ionicons
+                              name={config.icon}
+                              size={16}
+                              color={formState.category === key ? 'white' : config.color}
+                            />
+                            <Text
+                              style={[
+                                styles.formChipText,
+                                { color: formState.category === key ? 'white' : config.color },
+                              ]}
+                            >
+                              {config.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </ScrollView>
+                  </View>
+                  
+                  <View style={[styles.formSection, { flex: 1, marginLeft: 8 }]}>
+                    <Text style={styles.formLabel}>Priority</Text>
+                    <View style={styles.formChipGroup}>
+                      {Object.entries(PRIORITY_CONFIG).map(([key, config]) => (
+                        <TouchableOpacity
+                          key={key}
+                          style={[
+                            styles.formChip,
+                            { backgroundColor: config.lightColor },
+                            formState.priority === key && { 
+                              backgroundColor: config.color,
+                              borderWidth: 0,
+                            },
+                          ]}
+                          onPress={() => 
+                            formDispatch({ type: 'SET_FIELD', field: 'priority', value: key })
+                          }
+                        >
+                          <Ionicons
+                            name={config.icon}
+                            size={16}
+                            color={formState.priority === key ? 'white' : config.color}
+                          />
+                          <Text
+                            style={[
+                              styles.formChipText,
+                              { color: formState.priority === key ? 'white' : config.color },
+                            ]}
+                          >
+                            {config.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                </View>
+                
+                {/* Milestones */}
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Milestones</Text>
+                  
+                  {formState.milestones.length > 0 && (
+                    <View style={styles.formMilestonesList}>
+                      {formState.milestones.map((milestone, index) => (
+                        <View key={milestone.id || index} style={styles.formMilestoneItem}>
+                          <TouchableOpacity
+                            onPress={() => formDispatch({ type: 'TOGGLE_MILESTONE', index })}
+                            style={styles.formMilestoneCheck}
+                          >
+                            <Ionicons
+                              name={milestone.completed ? "checkmark-circle" : "ellipse-outline"}
+                              size={20}
+                              color={milestone.completed ? COLORS.success : COLORS.textSecondary}
+                            />
+                          </TouchableOpacity>
+                          <View style={styles.formMilestoneContent}>
+                            <Text style={[
+                              styles.formMilestoneTitle,
+                              milestone.completed && styles.formMilestoneTitleCompleted
+                            ]}>
+                              {milestone.title}
+                            </Text>
+                            {milestone.dueDate && (
+                              <Text style={styles.formMilestoneDate}>
+                                {new Date(milestone.dueDate).toLocaleDateString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric'
+                                })}
+                              </Text>
+                            )}
+                          </View>
+                          <TouchableOpacity
+                            onPress={() => formDispatch({ type: 'REMOVE_MILESTONE', index })}
+                          >
+                            <Ionicons name="close-circle" size={20} color={COLORS.danger} />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  
+                  <View style={styles.formAddMilestoneRow}>
+                    <View style={styles.formAddMilestoneInput}>
+                      <Ionicons name="add-circle-outline" size={20} color={COLORS.accentBlush} />
+                      <TextInput
+                        style={styles.formAddMilestoneText}
+                        placeholder="Add a milestone..."
+                        placeholderTextColor={COLORS.textTertiary}
+                        value={milestoneTitle}
+                        onChangeText={setMilestoneTitle}
+                        onSubmitEditing={() => {
+                          if (milestoneTitle.trim()) {
+                            formDispatch({
+                              type: 'ADD_MILESTONE',
+                              payload: { title: milestoneTitle.trim(), dueDate: null }
+                            });
+                            setMilestoneTitle("");
+                          }
+                        }}
+                      />
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.formAddMilestoneButton,
+                        !milestoneTitle.trim() && styles.formAddMilestoneButtonDisabled
+                      ]}
+                      disabled={!milestoneTitle.trim()}
+                      onPress={() => {
+                        formDispatch({
+                          type: 'ADD_MILESTONE',
+                          payload: { title: milestoneTitle.trim(), dueDate: null }
+                        });
+                        setMilestoneTitle("");
+                      }}
+                    >
+                      <Ionicons name="add" size={20} color="white" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                
+                {/* Tags */}
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Tags</Text>
+                  
+                  {formState.tags.length > 0 && (
+                    <View style={styles.formTagsContainer}>
+                      {formState.tags.map((tag, idx) => (
+                        <View key={idx} style={styles.formTag}>
+                          <Text style={styles.formTagText}>#{tag}</Text>
+                          <TouchableOpacity
+                            onPress={() => formDispatch({ type: 'REMOVE_TAG', payload: tag })}
+                          >
+                            <Ionicons name="close" size={16} color={COLORS.accentBlush} />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  
+                  <View style={styles.formAddTagRow}>
+                    <View style={styles.formAddTagInput}>
+                      <Ionicons name="pricetag-outline" size={20} color={COLORS.accentBlush} />
+                      <TextInput
+                        style={styles.formAddTagText}
+                        placeholder="Add a tag..."
+                        placeholderTextColor={COLORS.textTertiary}
+                        value={tagInput}
+                        onChangeText={setTagInput}
+                        onSubmitEditing={() => {
+                          if (tagInput.trim() && formState.tags.length < 5) {
+                            formDispatch({ type: 'ADD_TAG', payload: tagInput.trim().toLowerCase() });
+                            setTagInput("");
+                          }
+                        }}
+                      />
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.formAddTagButton,
+                        (formState.tags.length >= 5 || !tagInput.trim()) && styles.formAddTagButtonDisabled
+                      ]}
+                      disabled={formState.tags.length >= 5 || !tagInput.trim()}
+                      onPress={() => {
+                        if (tagInput.trim() && formState.tags.length < 5) {
+                          formDispatch({ type: 'ADD_TAG', payload: tagInput.trim().toLowerCase() });
+                          setTagInput("");
+                        }
+                      }}
+                    >
+                      <Ionicons name="add" size={20} color="white" />
+                    </TouchableOpacity>
+                  </View>
+                  {formState.tags.length >= 5 && (
+                    <Text style={styles.formHelperText}>Maximum 5 tags allowed</Text>
+                  )}
+                </View>
+                
+                {/* Notifications */}
+                <View style={styles.formSection}>
+                  <View style={styles.formSwitchRow}>
+                    <View style={styles.formSwitchLabel}>
+                      <Ionicons name="notifications-outline" size={20} color={COLORS.accentBlush} />
+                      <Text style={[styles.formLabel, { marginBottom: 0, marginLeft: 8 }]}>
+                        Reminder
+                      </Text>
+                    </View>
+                    <Switch
+                      value={formState.enable_notifications}
+                      onValueChange={(value) => {
+                        formDispatch({ type: 'SET_FIELD', field: 'enable_notifications', value });
+                        if (value && !formState.notificationTime) {
+                          formDispatch({ 
+                            type: 'SET_NOTIFICATION_TIME', 
+                            payload: new Date(formState.dueDate.getTime() - 30 * 60000)
+                          });
+                        }
+                      }}
+                      trackColor={{ false: '#E0E0E0', true: COLORS.accentBlush + '80' }}
+                      thumbColor={formState.enable_notifications ? COLORS.accentBlush : '#f4f3f4'}
+                    />
+                  </View>
+                  
+                  {formState.enable_notifications && (
+                    <>
+                      <Text style={[styles.formLabel, { marginTop: 16 }]}>Remind me</Text>
+                      <View style={styles.formNotifPresets}>
+                        {NOTIFICATION_PRESETS.map((preset) => {
+                          const dueTime = formState.dueDate.getTime();
+                          const isActive = preset.minutes === null
+                            ? formState.notificationTime && 
+                              !NOTIFICATION_PRESETS
+                                .filter(p => p.minutes !== null)
+                                .some(p => dueTime + p.minutes * 60000 === formState.notificationTime?.getTime())
+                            : formState.notificationTime?.getTime() === dueTime + preset.minutes * 60000;
+                          
+                          return (
+                            <TouchableOpacity
+                              key={preset.label}
+                              style={[styles.formNotifPreset, isActive && styles.formNotifPresetActive]}
+                              onPress={() => {
+                                if (preset.minutes === null) {
+                                  handleCustomNotificationPress();
+                                } else {
+                                  formDispatch({ 
+                                    type: 'SET_NOTIFICATION_TIME', 
+                                    payload: new Date(dueTime + preset.minutes * 60000)
+                                  });
+                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }
+                              }}
+                            >
+                              <Text style={[
+                                styles.formNotifPresetText,
+                                isActive && styles.formNotifPresetTextActive
+                              ]}>
+                                {preset.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                      
+                      {/* Custom Notification Picker */}
+                      {showNotifPicker && (
+                        <DateTimePicker
+                          value={tempNotifDate}
+                          mode={notifPickerMode}
+                          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                          minimumDate={new Date()}
+                          maximumDate={formState.dueDate}
+                          onChange={handleNotifPickerChange}
+                        />
+                      )}
+                      
+                      {/* Display selected notification time */}
+                      {formState.notificationTime && (
+                        <View style={styles.formNotifTimeDisplay}>
+                          <Ionicons name="time" size={16} color={COLORS.accentBlush} />
+                          <Text style={styles.formNotifTimeText}>
+                            {formState.notificationTime.toLocaleDateString('en-US', { 
+                              month: 'short', 
+                              day: 'numeric' 
+                            })} at {formState.notificationTime.toLocaleTimeString([], { 
+                              hour: '2-digit', 
+                              minute: '2-digit' 
+                            })}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={handleCustomNotificationPress}
+                            style={{ padding: 4 }}
+                          >
+                            <Ionicons name="create-outline" size={16} color={COLORS.accentBlush} />
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </>
+                  )}
+                </View>
+                
+                {/* Recurrence */}
+                <View style={styles.formSection}>
+                  <Text style={styles.formLabel}>Recurrence</Text>
+                  <View style={styles.formRecurrenceGrid}>
+                    {RECURRENCE_OPTIONS.map((option) => (
+                      <TouchableOpacity
+                        key={option.value}
+                        style={[
+                          styles.formRecurrenceCard,
+                          formState.recurrence.type === option.value && styles.formRecurrenceCardActive
+                        ]}
+                        onPress={() => {
+                          formDispatch({ 
+                            type: 'SET_FIELD', 
+                            field: 'recurrence', 
+                            value: { ...formState.recurrence, type: option.value }
+                          });
+                        }}
+                      >
+                        <Ionicons
+                          name={option.icon}
+                          size={20}
+                          color={formState.recurrence.type === option.value ? COLORS.recurring : COLORS.textSecondary}
+                        />
+                        <Text style={[
+                          styles.formRecurrenceText,
+                          formState.recurrence.type === option.value && styles.formRecurrenceTextActive
+                        ]}>
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  
+                  {formState.recurrence.type !== 'none' && (
+                    <View style={styles.formIntervalContainer}>
+                      <Text style={styles.formIntervalLabel}>Repeat every</Text>
+                      <View style={styles.formIntervalInputWrapper}>
+                        <TextInput
+                          style={styles.formIntervalInput}
+                          value={formState.recurrence.interval.toString()}
+                          onChangeText={(text) => {
+                            const num = parseInt(text) || 1;
+                            formDispatch({
+                              type: 'SET_FIELD',
+                              field: 'recurrence',
+                              value: { ...formState.recurrence, interval: num > 0 ? num : 1 }
+                            });
+                          }}
+                          keyboardType="numeric"
+                          maxLength={2}
+                        />
+                        <Text style={styles.formIntervalUnit}>
+                          {formState.recurrence.type === 'daily' ? 'days' :
+                           formState.recurrence.type === 'weekly' ? 'weeks' :
+                           formState.recurrence.type === 'monthly' ? 'months' : 'years'}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+              </ScrollView>
+              
+              {/* Save Button */}
+              <TouchableOpacity
+                style={styles.formSaveButton}
+                onPress={handleSaveGoal}
+                disabled={loading}
+              >
+                <LinearGradient
+                  colors={['#795D94', '#4A3B5C']}
+                  style={styles.formSaveGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="white" />
+                  ) : (
+                    <>
+                      <Ionicons 
+                        name={formState.isEditing ? "checkmark-done" : "flag"} 
+                        size={20} 
+                        color="white" 
+                      />
+                      <Text style={styles.formSaveText}>
+                        {formState.isEditing ? "Update Goal" : "Create Goal"}
+                      </Text>
+                    </>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </View>
   );
 }
 
-/* Enhanced Styles */
+/* ================================================================================
+   🎨 STYLES - Complete redesign with purple theme
+   ================================================================================ */
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.backgroundBase },
-  header: { 
-    flexDirection: "row", 
-    alignItems: "flex-start", 
-    justifyContent: "space-between", 
-    paddingTop: Platform.OS === 'ios' ? 50 : 30, 
-    paddingHorizontal: 20, 
-    marginBottom: 16,
-    backgroundColor: COLORS.card,
-    paddingBottom: 16,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  headerTitle: { fontSize: 28, fontWeight: "800", color: COLORS.textPrimary, marginBottom: 8 },
-  statsContainer: { flexDirection: "row", gap: 16, marginTop: 4, flexWrap: "wrap" },
-  statItem: { alignItems: "center", minWidth: 60 },
-  statNumber: { fontSize: 20, fontWeight: "700", color: COLORS.textPrimary },
-  statLabel: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
-  
-  // New header styles
-  viewToggleContainer: {
-    flexDirection: 'row',
+  screen: {
+    flex: 1,
     backgroundColor: COLORS.backgroundBase,
-    borderRadius: 12,
-    padding: 4,
   },
-  viewToggleButton: {
-    padding: 8,
-    borderRadius: 8,
-    marginHorizontal: 2,
+  
+  // Header
+  header: {
+    backgroundColor: COLORS.card,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    elevation: 8,
+    overflow: 'hidden',
   },
-  viewToggleActive: {
-    backgroundColor: COLORS.sage,
+  headerContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 50 : 18,
+    paddingBottom: 16,
   },
-  headerActions: {
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  headerTitle: {
+    fontWeight: '900',
+    color: COLORS.textPrimary,
+    letterSpacing: -0.5,
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  actionButtonSmall: {
-    backgroundColor: COLORS.card,
-    padding: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.shadowDark,
-  },
-  addButton: { 
-    backgroundColor: COLORS.accentBlush, 
-    borderRadius: 50, 
-    padding: 12, 
-    elevation: 4,
-    shadowColor: COLORS.sage,
-    shadowOpacity: 0.3,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 8,
+    gap: 12,
   },
   
-  // Search and filters
-  searchContainer: { 
-    flexDirection: "row", 
-    paddingHorizontal: 20, 
-    marginBottom: 16, 
-    gap: 12 
+  // View Mode Toggle
+  viewModeToggle: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 20,
+    padding: 4,
   },
-  searchBox: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: COLORS.card,
-    borderRadius: 12,
+  viewModeButton: {
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  viewModeButtonActive: {
+    backgroundColor: COLORS.card,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  
+  // Add Button
+  addButton: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowColor: COLORS.accentBlush,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  addButtonGradient: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  // Search
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
     borderWidth: 1,
-    borderColor: COLORS.shadowDark,
+    borderColor: COLORS.cardBorder,
   },
   searchInput: {
     flex: 1,
     marginLeft: 8,
-    fontSize: 15,
+    fontSize: 16,
     color: COLORS.textPrimary,
   },
-  filterButton: {
-    backgroundColor: COLORS.card,
-    borderRadius: 12,
-    padding: 12,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: COLORS.shadowDark,
-  },
-  filterButtonActive: {
-    backgroundColor: COLORS.sage + '15',
-    borderColor: COLORS.sage,
-  },
   
-  // Goals list
-  goalsList: {
-    flex: 1,
+  // Category Filters
+  categoryScroll: {
+    maxHeight: 60,
+    marginTop: 16,
   },
-  scrollContent: { padding: 20, paddingTop: 0, paddingBottom: 100 },
-  emptyState: { 
-    alignItems: "center", 
-    justifyContent: "center", 
-    marginTop: 80 
-  },
-  emptyListText: { 
-    textAlign: "center", 
-    color: COLORS.archived, 
-    marginTop: 16, 
-    fontSize: 16 
-  },
-  
-  // Goal item
-  goalItem: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 16, 
-    marginBottom: 16, 
-    borderWidth: 1, 
-    borderColor: COLORS.shadowDark, 
-    shadowColor: COLORS.nudeShadow, 
-    shadowOpacity: 0.6, 
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowRadius: 12, 
-    elevation: 3 
-  },
-  goalItemOverdue: {
-    borderColor: COLORS.danger + '40',
-    backgroundColor: COLORS.danger + '05',
-  },
-  goalItemArchived: {
-    opacity: 0.7,
-    borderColor: COLORS.archived + '40',
-  },
-  goalHeader: { 
-    flexDirection: "row", 
-    alignItems: "flex-start", 
-    justifyContent: "space-between", 
-    marginBottom: 12 
-  },
-  goalDetails: { flex: 1, marginRight: 12 },
-  goalTitle: { 
-    fontSize: 18, 
-    fontWeight: "700", 
-    color: COLORS.textPrimary,
-    marginRight: 8,
-    flex: 1,
-  },
-  goalDescription: { 
-    fontSize: 14, 
-    color: COLORS.textSecondary, 
-    marginTop: 6,
-    lineHeight: 20,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 8,
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  categoryBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  categoryText: {
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  daysRemaining: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-    fontWeight: "600",
-    marginTop: 8,
-  },
-  overdueText: {
-    color: COLORS.danger,
-  },
-  
-  // New badge styles
-  recurrenceBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  recurrenceText: {
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  timeTrackingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  timeTrackingText: {
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  
-  // Click hint styles
-  clickHintContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.shadowDark,
-    marginTop: 8,
-  },
-  clickHintText: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-    marginLeft: 6,
-    fontStyle: 'italic',
-  },
-  goalCardTouchable: {
-    paddingBottom: 4,
-  },
-  
-  goalMeta: { 
-    fontSize: 12, 
-    color: COLORS.archived, 
-    marginTop: 8, 
-    fontWeight: "500" 
-  },
-  ownerBadge: { fontWeight: "700" },
-  collaboratorBadge: { fontWeight: "700" },
-  
-  // Notification toggle
-  notificationToggle: {
-    marginLeft: 8,
-    padding: 4,
-  },
-  
-  // Time tracking controls
-  timeTrackingControls: {
-    flexDirection: "row",
-    alignItems: "center",
+  categoryContainer: {
+    paddingHorizontal: 20,
     gap: 12,
   },
-  timerButton: {
-    backgroundColor: COLORS.backgroundBase,
-    padding: 8,
-    borderRadius: 50,
-    borderWidth: 2,
-    borderColor: COLORS.sage,
+  categoryFilter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 6,
   },
-  timerButtonActive: {
-    backgroundColor: COLORS.danger,
-    borderColor: COLORS.danger,
+  categoryFilterActive: {
+    borderWidth: 0,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  categoryFilterText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  categoryFilterTextActive: {
+    color: 'white',
   },
   
-  priorityBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    marginLeft: 8,
+  // Stats Card (Now only in analytics)
+  statsCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 20,
+    overflow: 'hidden',
+    shadowColor: '#795D94',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(121,93,148,0.1)',
   },
-  priorityText: {
-    fontSize: 10,
-    fontWeight: "700",
-    textTransform: "uppercase",
+  statsGrid: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
-  tagsContainer: { 
-    flexDirection: "row", 
-    flexWrap: "wrap", 
-    marginTop: 8, 
-    gap: 6 
+  statItem: {
+    alignItems: 'center',
+    flex: 1,
   },
-  tag: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
+  statNumber: {
+    fontSize: 30,
+    fontWeight: '900',
+    color: COLORS.textPrimary,
+    marginBottom: 4,
+    letterSpacing: -1,
   },
-  tagEdit: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    flexDirection: "row",
-    alignItems: "center",
+  statLabel: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  statDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: 'rgba(121,93,148,0.15)',
+  },
+  progressBarContainer: {
+    marginTop: 8,
+  },
+  progressBarBackground: {
+    height: 6,
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: COLORS.accentBlush,
+    borderRadius: 3,
+  },
+  progressBarText: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    marginTop: 8,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  
+  // Goal Card
+  goalCard: {
+    marginBottom: 14,
+    borderRadius: 22,
+    overflow: 'hidden',
+    shadowColor: '#795D94',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    elevation: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(121,93,148,0.12)',
+  },
+  goalCardBlur: {
+    borderRadius: 22,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.97)',
+  },
+  goalCardHeader: {
+    flexDirection: 'row',
+  },
+  goalAccent: {
+    width: 6,
+    height: '100%',
+  },
+  goalContent: {
+    flex: 1,
+    padding: 16,
+  },
+  goalTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  goalTitleContainer: {
+    flex: 1,
+    marginRight: 12,
+  },
+  goalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    marginBottom: 6,
+    letterSpacing: -0.3,
+    lineHeight: 22,
+  },
+  goalBadges: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  goalDescription: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
+    marginTop: 8,
+  },
+  goalMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 12,
+  },
+  dueBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
     gap: 4,
+  },
+  dueText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  milestoneBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  milestoneBadgeText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
+  notificationBadge: {
+    backgroundColor: COLORS.info + '20',
+    padding: 5,
+    borderRadius: 12,
+  },
+  sharedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.accentBlush + '20',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  sharedBadgeText: {
+    fontSize: 11,
+    color: COLORS.accentBlush,
+    fontWeight: '700',
+  },
+  
+  // Tags
+  tagsScroll: {
+    marginTop: 12,
+  },
+  tagsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingRight: 20,
+  },
+  tagPill: {
+    backgroundColor: COLORS.accentBlush + '15',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   tagText: {
     fontSize: 11,
-    fontWeight: "600",
+    color: COLORS.accentBlush,
+    fontWeight: '600',
   },
   
-  // Progress circle
-  progressCircleContainer: { 
-    position: "relative", 
-    alignItems: "center", 
-    justifyContent: "center" 
+  // Priority & Category Badges
+  priorityBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
   },
-  progressText: { 
-    position: "absolute", 
-    fontWeight: "700" 
+  priorityBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  categoryPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  categoryBadgeLarge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 8,
+  },
+  categoryBadgeLargeText: {
+    color: 'white',
+    fontWeight: '700',
+    fontSize: 14,
   },
   
-  // Milestones
-  milestonesContainer: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: COLORS.shadowDark },
-  milestoneHeader: { 
-    flexDirection: "row", 
-    justifyContent: "space-between", 
-    alignItems: "center", 
-    marginBottom: 8 
+  // Expanded Content
+  expandedContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
   },
-  milestonesTitle: { 
-    fontSize: 15, 
-    fontWeight: "700", 
-    color: COLORS.textPrimary 
+  divider: {
+    height: 1,
+    backgroundColor: COLORS.cardBorder,
+    marginVertical: 12,
   },
-  milestoneCount: {
+  milestonesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  milestonesTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  milestonesCount: {
     fontSize: 13,
     color: COLORS.textSecondary,
-    fontWeight: "600",
+    fontWeight: '600',
   },
-  emptyMilestonesState: {
+  emptyMilestones: {
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 20,
-    backgroundColor: COLORS.backgroundBase,
+    backgroundColor: COLORS.surfaceVariant,
     borderRadius: 12,
-    marginBottom: 12,
   },
-  emptyMilestonesText: { 
-    fontSize: 13, 
-    color: COLORS.archived, 
+  emptyMilestonesText: {
+    fontSize: 13,
+    color: COLORS.textTertiary,
     marginTop: 8,
-    textAlign: 'center',
-    fontStyle: "italic",
-  },
-  milestoneRow: { 
-    flexDirection: "row", 
-    justifyContent: "space-between", 
-    alignItems: "center", 
-    paddingVertical: 8 
-  },
-  milestoneItem: { flex: 1, flexDirection: "row", alignItems: "center" },
-  milestoneContent: {
-    flex: 1,
-    marginLeft: 10,
-  },
-  milestoneText: { fontSize: 14, color: COLORS.textPrimary },
-  completedMilestoneText: { 
-    textDecorationLine: "line-through", 
-    color: COLORS.archived 
-  },
-  milestoneDueDateBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: 'flex-start',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginTop: 4,
-    gap: 2,
-  },
-  milestoneDueDateText: {
-    fontSize: 10,
-    fontWeight: "600",
-  },
-  deleteMilestoneButton: { padding: 6 },
-  milestoneInputContainer: { 
-    flexDirection: "row", 
-    alignItems: "flex-start", 
-    marginTop: 12 
-  },
-  milestoneAddButton: { 
-    borderRadius: 50, 
-    padding: 8,
-    marginLeft: 8,
-  },
-  
-  // Goal actions
-  goalActions: { 
-    flexDirection: "row", 
-    justifyContent: "flex-end", 
-    marginTop: 12, 
-    borderTopWidth: 1, 
-    borderTopColor: COLORS.shadowDark, 
-    paddingTop: 12,
-    gap: 8,
-  },
-  actionButton: { 
-    padding: 8, 
-    borderRadius: 8,
-    backgroundColor: COLORS.backgroundBase,
-  },
-  disabledAction: { opacity: 0.4 },
-  
-  // Modals
-  modalOverlay: { 
-    flex: 1, 
-    backgroundColor: "rgba(0,0,0,0.4)", 
-    justifyContent: "center", 
-    alignItems: "center" 
-  },
-  formModalContainer: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 20, 
-    padding: 24, 
-    width: "92%", 
-    maxHeight: "85%", 
-    elevation: 8,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 16,
-  },
-  formModalHeader: { 
-    flexDirection: "row", 
-    justifyContent: "space-between", 
-    marginBottom: 20, 
-    alignItems: "center" 
-  },
-  formModalTitle: { 
-    fontSize: 22, 
-    fontWeight: "800", 
-    color: COLORS.textPrimary 
-  },
-  label: { 
-    fontSize: 14, 
-    marginBottom: 8, 
-    marginTop: 16, 
-    fontWeight: "700", 
-    color: COLORS.textPrimary 
-  },
-  input: { 
-    borderWidth: 1, 
-    borderColor: COLORS.shadowDark, 
-    borderRadius: 12, 
-    padding: 14, 
-    marginBottom: 12, 
-    fontSize: 15, 
-    backgroundColor: COLORS.backgroundBase, 
-    color: COLORS.textPrimary 
-  },
-  
-  // Priority selector
-  prioritySelector: { 
-    flexDirection: "row", 
-    gap: 8, 
-    marginBottom: 12 
-  },
-  priorityOption: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: COLORS.shadowDark,
-    alignItems: "center",
-    backgroundColor: COLORS.backgroundBase,
-  },
-  priorityOptionText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: COLORS.textSecondary,
-  },
-  
-  // Category selector
-  categorySelector: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
     marginBottom: 12,
   },
-  categoryOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.shadowDark,
-    backgroundColor: COLORS.backgroundBase,
+  addMilestoneButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
+    backgroundColor: COLORS.card,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
-  categoryOptionSelected: {
-    backgroundColor: COLORS.sage + '15',
-    borderColor: COLORS.sage,
-  },
-  categoryOptionText: {
+  addMilestoneText: {
     fontSize: 13,
-    color: COLORS.textSecondary,
-    fontWeight: "600",
+    color: COLORS.accentBlush,
+    fontWeight: '600',
   },
-  categoryOptionTextSelected: {
-    color: COLORS.sage,
-    fontWeight: "700",
+  tapHintContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: COLORS.accentBlush + '10',
+    borderRadius: 16,
   },
-  
-  // Recurrence settings
-  recurrenceContainer: {
-    marginBottom: 12,
+  tapHintText: {
+    fontSize: 11,
+    color: COLORS.accentBlush,
+    marginLeft: 4,
+    fontWeight: '500',
+    fontStyle: 'italic',
   },
-  recurrenceSelector: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  noMilestonesHint: {
+    fontSize: 12,
+    color: COLORS.textTertiary,
+    fontStyle: 'italic',
+    marginTop: 8,
+  },
+  addMoreMilestoneButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    paddingVertical: 8,
+    gap: 6,
+    backgroundColor: COLORS.accentBlush + '10',
+    borderRadius: 16,
+  },
+  addMoreMilestoneText: {
+    fontSize: 12,
+    color: COLORS.accentBlush,
+    fontWeight: '600',
+  },
+  milestonesList: {
     gap: 8,
   },
-  recurrenceOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.shadowDark,
-    backgroundColor: COLORS.backgroundBase,
-  },
-  recurrenceOptionSelected: {
-    backgroundColor: COLORS.recurring + '15',
-    borderColor: COLORS.recurring,
-  },
-  recurrenceOptionText: {
-    fontSize: 13,
-    color: COLORS.textSecondary,
-    fontWeight: "600",
-  },
-  recurrenceOptionTextSelected: {
-    color: COLORS.recurring,
-    fontWeight: "700",
-  },
-  intervalContainer: {
-    flexDirection: "row",
-    alignItems: "center",
+  milestoneItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 12,
   },
-  intervalText: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    fontWeight: "600",
-  },
-  
-  // Date picker
-  datePickerButton: { 
-    flexDirection: "row", 
-    alignItems: "center", 
-    borderWidth: 1, 
-    borderColor: COLORS.shadowDark, 
-    borderRadius: 12, 
-    padding: 14, 
-    backgroundColor: COLORS.backgroundBase,
-    marginBottom: 12,
-  },
-  datePickerText: { 
-    marginLeft: 12, 
-    fontSize: 15, 
-    color: COLORS.textPrimary,
-    fontWeight: "600",
-  },
-  
-  // Save button
-  saveButton: { 
-    backgroundColor: COLORS.textPrimary, 
-    borderRadius: 12, 
-    padding: 16, 
-    alignItems: "center", 
-    marginTop: 20 
-  },
-  saveButtonText: { 
-    color: "#fff", 
-    fontWeight: "700", 
-    fontSize: 16 
-  },
-  
-  // Message modal
-  messageModalContainer: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 24, 
-    minWidth: "75%", 
-    alignItems: "center", 
-    elevation: 8,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 12,
-  },
-  modalText: { 
-    fontSize: 16, 
-    textAlign: "center", 
-    color: COLORS.textPrimary,
-    lineHeight: 24,
-  },
-  errorText: { 
-    color: COLORS.danger, 
-    fontSize: 13, 
-    marginBottom: 8, 
-    textAlign: "center", 
-    marginTop: 4 
-  },
-  
-  // Email pill
-  emailPill: { 
-    flexDirection: "row", 
-    alignItems: "center", 
-    paddingHorizontal: 12, 
-    paddingVertical: 8, 
-    borderRadius: 20, 
-    marginRight: 8, 
-    marginBottom: 8 
-  },
-  emailPillText: { 
-    fontWeight: "600",
-    fontSize: 13,
-  },
-  
-  // Notification badge
-  notifBadge: { 
-    backgroundColor: COLORS.danger, 
-    borderRadius: 12, 
-    minWidth: 22, 
-    height: 22, 
-    justifyContent: "center", 
-    alignItems: "center", 
-    marginLeft: 10 
-  },
-  notifBadgeText: { 
-    color: "#fff", 
-    fontSize: 11, 
-    fontWeight: "700" 
-  },
-  
-  // Filter options
-  filterOptions: {
-    gap: 8,
-    marginBottom: 12,
-  },
-  filterOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.shadowDark,
-    backgroundColor: COLORS.backgroundBase,
-    gap: 10,
-  },
-  filterOptionSelected: {
-    backgroundColor: COLORS.sage + '15',
-    borderColor: COLORS.sage,
-  },
-  filterOptionText: {
-    fontSize: 15,
-    color: COLORS.textSecondary,
-    fontWeight: "600",
-    flex: 1,
-  },
-  filterOptionTextSelected: {
-    color: COLORS.sage,
-    fontWeight: "700",
-  },
-  priorityDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  toggleOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.shadowDark,
-    backgroundColor: COLORS.backgroundBase,
-    marginTop: 8,
-    marginBottom: 16,
-  },
-  
-  // Milestone form
-  milestonesList: {
-    marginBottom: 16,
-  },
-  milestoneFormItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: COLORS.backgroundBase,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
   milestoneCheckbox: {
-    marginRight: 12,
+    padding: 2,
   },
-  milestoneFormContent: {
+  milestoneContent: {
     flex: 1,
   },
-  milestoneFormText: {
+  milestoneTitle: {
     fontSize: 14,
     color: COLORS.textPrimary,
-    fontWeight: "500",
+    marginBottom: 2,
   },
-  milestoneFormDueDate: {
+  milestoneTitleCompleted: {
+    textDecorationLine: 'line-through',
+    color: COLORS.textTertiary,
+  },
+  milestoneDueDate: {
     fontSize: 11,
     color: COLORS.textSecondary,
-    marginTop: 2,
-  },
-  deleteMilestoneFormButton: {
-    padding: 6,
-    marginLeft: 8,
   },
   
-  // Analytics charts
-  chartContainer: {
-    backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    marginHorizontal: 20,
+  // Goal Actions
+  goalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(121,93,148,0.1)',
+    backgroundColor: 'rgba(121,93,148,0.03)',
   },
-  chartTitle: {
+  expandHintBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  expandHintText: {
+    fontSize: 12,
+    color: COLORS.accentBlush,
+    fontWeight: '600',
+  },
+  goalActionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  actionButton: {
+    padding: 7,
+    borderRadius: 10,
+  },
+  deleteButton: {
+    marginLeft: 4,
+  },
+  
+  // Quick Add
+  quickAddContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    zIndex: 100,
+  },
+  quickAddBlur: {
+    borderRadius: 30,
+    overflow: 'hidden',
+  },
+  quickAddInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: Platform.OS === 'ios' ? 16 : 12,
+    backgroundColor: COLORS.card,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  quickAddInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  quickAddSubmit: {
+    marginLeft: 8,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  quickAddSubmitGradient: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  // Calendar View
+  calendarView: {
+    flex: 1,
+    paddingTop: 20,
+  },
+  calendarContainer: {
+    backgroundColor: COLORS.card,
+    marginHorizontal: 20,
+    marginBottom: 20,
+    padding: 16,
+    borderRadius: 24,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  calendarHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  calendarNav: {
+    padding: 8,
+    borderRadius: 16,
+    backgroundColor: COLORS.surfaceVariant,
+  },
+  calendarMonth: {
     fontSize: 18,
     fontWeight: '700',
     color: COLORS.textPrimary,
-    marginBottom: 16,
   },
-  progressGrid: {
+  weekdayRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    marginBottom: 8,
   },
-  progressStat: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  progressStatNumber: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: COLORS.sage,
-    marginBottom: 4,
-  },
-  progressStatLabel: {
-    fontSize: 12,
+  weekdayText: {
+    width: (width - 72) / 7,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '600',
     color: COLORS.textSecondary,
   },
-  categoryStats: {
-    gap: 12,
+  daysGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
   },
-  categoryStatItem: {
-    marginBottom: 8,
+  dayCell: {
+    width: (width - 72) / 7,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 22,
+    position: 'relative',
+  },
+  dayCellSelected: {
+    backgroundColor: COLORS.accentBlush,
+  },
+  dayCellToday: {
+    borderWidth: 2,
+    borderColor: COLORS.accentBlush,
+  },
+  dayText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.textPrimary,
+  },
+  dayTextSelected: {
+    color: 'white',
+  },
+  dayTextToday: {
+    fontWeight: '700',
+  },
+  dayDot: {
+    position: 'absolute',
+    bottom: 4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: COLORS.accentBlush,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dayDotText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  selectedDateHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginHorizontal: 20,
+    marginBottom: 16,
+  },
+  selectedDateTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  
+  // Analytics View
+  analyticsView: {
+    flex: 1,
+    padding: 20,
+  },
+  analyticsCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  analyticsTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    marginBottom: 20,
+  },
+  analyticsGrid: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  analyticsItem: {
+    alignItems: 'center',
+  },
+  analyticsLabel: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 8,
+    fontWeight: '600',
+  },
+  analyticsStats: {
+    flex: 1,
+    marginLeft: 20,
+  },
+  analyticsStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  analyticsDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  analyticsStatLabel: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
+  },
+  analyticsStatValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  categoryStatRow: {
+    marginBottom: 16,
   },
   categoryStatHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
     marginBottom: 6,
   },
   categoryStatName: {
+    flex: 1,
     fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  categoryStatCount: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
     fontWeight: '600',
   },
   categoryStatBar: {
     height: 8,
-    backgroundColor: COLORS.shadowDark,
+    backgroundColor: COLORS.surfaceVariant,
     borderRadius: 4,
     overflow: 'hidden',
   },
@@ -4616,714 +3528,729 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 4,
   },
-  categoryStatCount: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-    marginTop: 4,
-    textAlign: 'right',
-  },
-
-  // Notification Section Styles
-  notificationSection: {
-    marginTop: 20,
-    padding: 16,
+  backToListButton: {
     backgroundColor: COLORS.card,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.sage + "22",
-  },
-  notificationHeader: {
-    flexDirection: 'row',
+    padding: 16,
+    borderRadius: 16,
     alignItems: 'center',
-    marginBottom: 12,
+    marginTop: 8,
+    marginBottom: 40,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
   },
-  helperText: {
-    fontSize: 12,
+  backToListText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.accentBlush,
+  },
+  
+  // Goals List
+  goalsList: {
+    flex: 1,
+  },
+  goalsListContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  
+  // Loading
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
     color: COLORS.textSecondary,
-    marginTop: 4,
+    fontWeight: '500',
+  },
+  
+  // Empty State
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    marginTop: 16,
     marginBottom: 8,
   },
-  notificationHint: {
+  emptyText: {
+    fontSize: 15,
+    color: COLORS.textTertiary,
+    textAlign: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 40,
+  },
+  emptyButton: {
+    borderRadius: 30,
+    overflow: 'hidden',
+    shadowColor: COLORS.accentBlush,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  emptyButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    gap: 8,
+  },
+  emptyButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  
+  // Modal Overlay
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  // Milestone Modal
+  milestoneModal: {
+    width: width * 0.9,
+    backgroundColor: COLORS.card,
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.8,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  milestoneModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  milestoneModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  modalLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginBottom: 8,
+  },
+  modalInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    marginBottom: 16,
+  },
+  modalInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  modalDateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    marginBottom: 16,
+  },
+  modalDateText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  milestoneModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  modalCancelButton: {
+    backgroundColor: COLORS.surfaceVariant,
+  },
+  modalCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  modalSaveButton: {
+    backgroundColor: COLORS.accentBlush,
+  },
+  modalSaveText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: 'white',
+  },
+  
+  // Share Modal
+  shareModal: {
+    width: width * 0.9,
+    backgroundColor: COLORS.card,
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: COLORS.nudeShadow,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.8,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  shareModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  shareModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  shareGoalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.accentBlush,
+    marginBottom: 20,
+    padding: 12,
+    backgroundColor: COLORS.accentBlush + '10',
+    borderRadius: 12,
+  },
+  shareInputRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 8,
+  },
+  shareInputContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  shareInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  shareAddButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: COLORS.accentBlush,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  shareErrorText: {
+    fontSize: 13,
+    color: COLORS.danger,
+    marginBottom: 16,
+  },
+  collaboratorsList: {
+    marginTop: 20,
+    marginBottom: 24,
+  },
+  collaboratorsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 12,
+  },
+  collaboratorItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 8,
+  },
+  collaboratorInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  collaboratorAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.accentBlush,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  collaboratorInitial: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  collaboratorName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 2,
+  },
+  collaboratorEmail: {
     fontSize: 12,
     color: COLORS.textSecondary,
-    fontStyle: 'italic',
-    marginTop: 8,
-    textAlign: 'center',
   },
-
-/* ==================== MODERN MODAL STYLES ==================== */
-
-modernModalOverlay: {
-  flex: 1,
-  backgroundColor: 'rgba(0, 0, 0, 0.5)',
-  justifyContent: 'flex-end',
-},
-
-modernModalBlur: {
-  ...StyleSheet.absoluteFillObject,
-  backgroundColor: 'rgba(0, 0, 0, 0.3)',
-},
-
-modernModalContainer: {
-  backgroundColor: COLORS.card,
-  borderTopLeftRadius: 20,
-  borderTopRightRadius: 20,
-  height: '92%',
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: -4 },
-  shadowOpacity: 0.2,
-  shadowRadius: 16,
-  elevation: 8,
-},
-
-modernModalHeader: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  paddingHorizontal: 20,
-  paddingTop: 24,
-  paddingBottom: 12,
-},
-
-modernBackButton: {
-  width: 40,
-  height: 40,
-  borderRadius: 12,
-  backgroundColor: COLORS.backgroundBase,
-  alignItems: 'center',
-  justifyContent: 'center',
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernHeaderCenter: {
-  flex: 1,
-  alignItems: 'center',
-},
-
-modernModalTitle: {
-  fontSize: 22,
-  fontWeight: '800',
-  color: COLORS.textPrimary,
-},
-
-modernModalStepText: {
-  fontSize: 12,
-  color: COLORS.textSecondary,
-  marginTop: 2,
-  fontWeight: '600',
-},
-
-/* Progress Bar */
-modernProgressContainer: {
-  paddingHorizontal: 20,
-  paddingBottom: 20,
-},
-
-modernProgressBackground: {
-  height: 4,
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 2,
-  overflow: 'hidden',
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernProgressFill: {
-  height: '100%',
-  backgroundColor: COLORS.sage,
-  borderRadius: 2,
-},
-
-modernStepDots: {
-  flexDirection: 'row',
-  justifyContent: 'center',
-  marginTop: 12,
-  gap: 6,
-},
-
-modernStepDot: {
-  width: 6,
-  height: 6,
-  borderRadius: 3,
-  backgroundColor: COLORS.shadowDark,
-},
-
-modernStepDotActive: {
-  backgroundColor: COLORS.sage,
-  width: 20,
-},
-
-/* Content Container */
-modernContentContainer: {
-  flex: 1,
-},
-
-modernStepContent: {
-  flex: 1,
-  paddingHorizontal: 20,
-},
-
-/* Step Header */
-modernStepHeader: {
-  alignItems: 'center',
-  marginBottom: 24,
-  paddingTop: 8,
-},
-
-modernIconCircle: {
-  width: 64,
-  height: 64,
-  borderRadius: 32,
-  backgroundColor: COLORS.backgroundBase,
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginBottom: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernStepTitle: {
-  fontSize: 20,
-  fontWeight: '800',
-  color: COLORS.textPrimary,
-  marginBottom: 6,
-},
-
-modernStepSubtitle: {
-  fontSize: 14,
-  color: COLORS.textSecondary,
-  textAlign: 'center',
-  lineHeight: 20,
-  paddingHorizontal: 20,
-},
-
-/* Input Groups */
-modernInputGroup: {
-  marginBottom: 20,
-},
-
-modernLabel: {
-  fontSize: 14,
-  fontWeight: '700',
-  color: COLORS.textPrimary,
-  marginBottom: 8,
-},
-
-modernInputWrapper: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  paddingHorizontal: 14,
-  minHeight: 50,
-},
-
-modernInputIcon: {
-  marginRight: 10,
-},
-
-modernInput: {
-  flex: 1,
-  fontSize: 15,
-  color: COLORS.textPrimary,
-  fontWeight: '500',
-  paddingVertical: 12,
-},
-
-modernInputSuffix: {
-  fontSize: 13,
-  color: COLORS.textSecondary,
-  fontWeight: '600',
-  marginLeft: 8,
-},
-
-modernTextArea: {
-  minHeight: 100,
-  alignItems: 'flex-start',
-  paddingVertical: 12,
-},
-
-modernHelperText: {
-  fontSize: 12,
-  color: COLORS.textSecondary,
-  marginTop: 4,
-},
-
-/* Priority Cards */
-modernPriorityGrid: {
-  flexDirection: 'row',
-  justifyContent: 'space-between',
-},
-
-modernPriorityCard: {
-  width: '31%',
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  padding: 12,
-  alignItems: 'center',
-  gap: 8,
-},
-
-modernPriorityCardActive: {
-  borderWidth: 2,
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.08,
-  shadowRadius: 4,
-  elevation: 2,
-},
-
-modernPriorityIcon: {
-  width: 40,
-  height: 40,
-  borderRadius: 20,
-  alignItems: 'center',
-  justifyContent: 'center',
-},
-
-modernPriorityText: {
-  fontSize: 13,
-  fontWeight: '600',
-  color: COLORS.textPrimary,
-  textAlign: 'center',
-},
-
-/* Date Button */
-modernDateButton: {
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  overflow: 'hidden',
-},
-
-modernDateButtonContent: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  padding: 14,
-},
-
-modernDateIcon: {
-  width: 44,
-  height: 44,
-  borderRadius: 12,
-  backgroundColor: COLORS.sage + '20',
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginRight: 12,
-},
-
-modernDateTextContainer: {
-  flex: 1,
-},
-
-modernDateLabel: {
-  fontSize: 11,
-  color: COLORS.textSecondary,
-  fontWeight: '600',
-  marginBottom: 2,
-},
-
-modernDateValue: {
-  fontSize: 15,
-  fontWeight: '700',
-  color: COLORS.textPrimary,
-},
-
-/* Category Grid */
-modernCategoryGrid: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  justifyContent: 'space-between',
-},
-
-modernCategoryCard: {
-  width: '30%',
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  padding: 12,
-  alignItems: 'center',
-  gap: 6,
-  aspectRatio: 1,
-  justifyContent: 'center',
-  marginBottom: 8,
-},
-
-modernCategoryCardActive: {
-  borderWidth: 2,
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.08,
-  shadowRadius: 4,
-  elevation: 2,
-},
-
-modernCategoryText: {
-  fontSize: 11,
-  fontWeight: '600',
-  color: COLORS.textPrimary,
-  textAlign: 'center',
-},
-
-/* Milestones */
-modernMilestonesList: {
-  marginBottom: 12,
-},
-
-modernMilestoneCard: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  padding: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  marginBottom: 8,
-},
-
-modernMilestoneCheck: {
-  marginRight: 10,
-},
-
-modernMilestoneContent: {
-  flex: 1,
-},
-
-modernMilestoneTitle: {
-  fontSize: 14,
-  fontWeight: '600',
-  color: COLORS.textPrimary,
-  marginBottom: 2,
-},
-
-modernMilestoneTitleCompleted: {
-  textDecorationLine: 'line-through',
-  color: COLORS.textSecondary,
-},
-
-modernMilestoneDate: {
-  fontSize: 11,
-  color: COLORS.textSecondary,
-  fontWeight: '500',
-},
-
-modernMilestoneDelete: {
-  padding: 4,
-},
-
-modernAddMilestoneContainer: {
-  flexDirection: 'row',
-  alignItems: 'center',
-},
-
-modernMilestoneDateButton: {
-  width: 44,
-  height: 44,
-  borderRadius: 12,
-  backgroundColor: COLORS.backgroundBase,
-  alignItems: 'center',
-  justifyContent: 'center',
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  marginLeft: 8,
-},
-
-modernAddMilestoneButton: {
-  width: 44,
-  height: 44,
-  borderRadius: 12,
-  backgroundColor: COLORS.sage,
-  alignItems: 'center',
-  justifyContent: 'center',
-  shadowColor: COLORS.sage,
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.3,
-  shadowRadius: 4,
-  elevation: 3,
-  marginLeft: 8,
-},
-
-modernAddMilestoneButtonDisabled: {
-  backgroundColor: COLORS.shadowDark,
-  opacity: 0.5,
-  shadowOpacity: 0,
-  elevation: 0,
-},
-
-/* Tags */
-modernTagsContainer: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  marginBottom: 10,
-},
-
-modernTag: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: COLORS.accentBlush + '20',
-  borderRadius: 12,
-  paddingHorizontal: 12,
-  paddingVertical: 6,
-  gap: 6,
-  borderWidth: 1,
-  borderColor: COLORS.accentBlush + '40',
-  marginRight: 8,
-  marginBottom: 8,
-},
-
-modernTagText: {
-  fontSize: 12,
-  fontWeight: '600',
-  color: COLORS.accentBlush,
-},
-
-modernAddTagContainer: {
-  flexDirection: 'row',
-  alignItems: 'center',
-},
-
-modernAddTagButton: {
-  width: 44,
-  height: 44,
-  borderRadius: 12,
-  backgroundColor: COLORS.accentBlush,
-  alignItems: 'center',
-  justifyContent: 'center',
-  shadowColor: COLORS.accentBlush,
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.3,
-  shadowRadius: 4,
-  elevation: 3,
-  marginLeft: 8,
-},
-
-modernAddTagButtonDisabled: {
-  backgroundColor: COLORS.shadowDark,
-  opacity: 0.5,
-  shadowOpacity: 0,
-  elevation: 0,
-},
-
-/* Feature Cards */
-modernFeatureCard: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  padding: 14,
-  marginBottom: 10,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernFeatureIcon: {
-  width: 44,
-  height: 44,
-  borderRadius: 12,
-  backgroundColor: COLORS.card,
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginRight: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernFeatureContent: {
-  flex: 1,
-},
-
-modernFeatureTitle: {
-  fontSize: 15,
-  fontWeight: '700',
-  color: COLORS.textPrimary,
-  marginBottom: 2,
-},
-
-modernFeatureDescription: {
-  fontSize: 12,
-  color: COLORS.textSecondary,
-  fontWeight: '500',
-},
-
-/* Expanded Sections */
-modernExpandedSection: {
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 12,
-  padding: 12,
-  marginTop: -4,
-  marginBottom: 10,
-  gap: 10,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernReminderTimeButton: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: COLORS.card,
-  borderRadius: 12,
-  padding: 12,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernReminderTimeContent: {
-  flex: 1,
-  marginLeft: 10,
-},
-
-modernReminderTimeLabel: {
-  fontSize: 11,
-  color: COLORS.textSecondary,
-  fontWeight: '600',
-  marginBottom: 2,
-},
-
-modernReminderTimeValue: {
-  fontSize: 14,
-  fontWeight: '700',
-  color: COLORS.textPrimary,
-},
-
-/* Recurrence */
-modernRecurrenceGrid: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  justifyContent: 'space-between',
-},
-
-modernRecurrenceCard: {
-  width: '48%',
-  backgroundColor: COLORS.card,
-  borderRadius: 12,
-  padding: 10,
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-  marginBottom: 8,
-},
-
-modernRecurrenceCardActive: {
-  borderColor: COLORS.recurring,
-  backgroundColor: COLORS.recurring + '15',
-  borderWidth: 2,
-},
-
-modernRecurrenceText: {
-  fontSize: 12,
-  fontWeight: '600',
-  color: COLORS.textSecondary,
-},
-
-modernRecurrenceTextActive: {
-  color: COLORS.recurring,
-  fontWeight: '700',
-},
-
-modernIntervalContainer: {
-  backgroundColor: COLORS.card,
-  borderRadius: 12,
-  padding: 12,
-  flexDirection: 'row',
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernIntervalLabel: {
-  fontSize: 13,
-  fontWeight: '600',
-  color: COLORS.textPrimary,
-  marginRight: 10,
-},
-
-modernIntervalInputWrapper: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  flex: 1,
-},
-
-modernIntervalInput: {
-  backgroundColor: COLORS.backgroundBase,
-  borderRadius: 8,
-  padding: 8,
-  fontSize: 15,
-  fontWeight: '700',
-  color: COLORS.textPrimary,
-  textAlign: 'center',
-  width: 60,
-  marginRight: 8,
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
-
-modernIntervalUnit: {
-  fontSize: 13,
-  fontWeight: '600',
-  color: COLORS.textSecondary,
-},
-
-/* Footer */
-modernModalFooter: {
-  padding: 20,
-  paddingBottom: Platform.OS === 'ios' ? 34 : 20,
-  borderTopWidth: 1,
-  borderTopColor: COLORS.shadowDark,
-  backgroundColor: COLORS.card,
-},
-
-modernNextButton: {
-  backgroundColor: COLORS.sage,
-  borderRadius: 12,
-  height: 52,
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 8,
-  shadowColor: COLORS.sage,
-  shadowOffset: { width: 0, height: 4 },
-  shadowOpacity: 0.3,
-  shadowRadius: 8,
-  elevation: 4,
-},
-
-modernNextButtonText: {
-  fontSize: 16,
-  fontWeight: '700',
-  color: '#FFFFFF',
-},
-
-modernCreateButton: {
-  backgroundColor: COLORS.textPrimary,
-  borderRadius: 12,
-  height: 52,
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 8,
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 4 },
-  shadowOpacity: 0.3,
-  shadowRadius: 8,
-  elevation: 4,
-},
-
-modernCreateButtonText: {
-  fontSize: 16,
-  fontWeight: '700',
-  color: '#FFFFFF',
-},
-
-// Border utility class
-border: {
-  borderWidth: 1,
-  borderColor: COLORS.shadowDark,
-},
+  shareConfirmButton: {
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  shareConfirmGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    gap: 8,
+  },
+  shareConfirmText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  
+  // Form Modal
+  formModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(58,46,69,0.55)',
+  },
+  formModalKeyboard: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  formModalContainer: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 12,
+    paddingHorizontal: 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 24,
+    maxHeight: height * 0.88,
+  },
+  formModalDragHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.nudeShadow,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  formModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 20,
+  },
+  formModalTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    letterSpacing: -0.5,
+  },
+  formModalSubtitle: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    marginTop: 3,
+  },
+  formModalClose: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: COLORS.surfaceVariant,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  formModalScroll: {
+    paddingBottom: 20,
+  },
+  
+  // Form Elements
+  formSection: {
+    marginBottom: 24,
+  },
+  formLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  requiredStar: {
+    color: COLORS.danger,
+  },
+  formCounter: {
+    fontSize: 11,
+    color: COLORS.textTertiary,
+    fontWeight: '500',
+  },
+  formInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formTextArea: {
+    alignItems: 'flex-start',
+  },
+  formInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: COLORS.textPrimary,
+  },
+  formDateTimeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  formDateTimeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formDateTimeText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  formRow: {
+    flexDirection: 'row',
+    marginBottom: 16,
+  },
+  formChipGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  formChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  
+  // Form Milestones
+  formMilestonesList: {
+    marginBottom: 12,
+  },
+  formMilestoneItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 8,
+  },
+  formMilestoneCheck: {
+    marginRight: 12,
+  },
+  formMilestoneContent: {
+    flex: 1,
+  },
+  formMilestoneTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+    marginBottom: 2,
+  },
+  formMilestoneTitleCompleted: {
+    textDecorationLine: 'line-through',
+    color: COLORS.textTertiary,
+  },
+  formMilestoneDate: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+  },
+  formAddMilestoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  formAddMilestoneInput: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formAddMilestoneText: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 15,
+    color: COLORS.textPrimary,
+  },
+  formAddMilestoneButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: COLORS.accentBlush,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  formAddMilestoneButtonDisabled: {
+    backgroundColor: COLORS.textTertiary,
+    opacity: 0.5,
+  },
+  
+  // Form Tags
+  formTagsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  formTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.accentBlush + '15',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 6,
+  },
+  formTagText: {
+    fontSize: 13,
+    color: COLORS.accentBlush,
+    fontWeight: '600',
+  },
+  formAddTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  formAddTagInput: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formAddTagText: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 15,
+    color: COLORS.textPrimary,
+  },
+  formAddTagButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: COLORS.accentBlush,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  formAddTagButtonDisabled: {
+    backgroundColor: COLORS.textTertiary,
+    opacity: 0.5,
+  },
+  formHelperText: {
+    fontSize: 12,
+    color: COLORS.textTertiary,
+    marginTop: 8,
+  },
+  
+  // Form Notifications
+  formSwitchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  formSwitchLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  formNotifPresets: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  formNotifPreset: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: COLORS.surfaceVariant,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formNotifPresetActive: {
+    backgroundColor: COLORS.accentBlush,
+    borderWidth: 0,
+  },
+  formNotifPresetText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  formNotifPresetTextActive: {
+    color: 'white',
+  },
+  formNotifTimeDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.accentBlush + '15',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 16,
+    marginBottom: 16,
+    gap: 8,
+  },
+  formNotifTimeText: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.accentBlush,
+    fontWeight: '600',
+  },
+  
+  // Form Recurrence
+  formRecurrenceGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  formRecurrenceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: COLORS.surfaceVariant,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    gap: 8,
+    minWidth: (width - 64) / 2,
+  },
+  formRecurrenceCardActive: {
+    backgroundColor: COLORS.recurring + '15',
+    borderColor: COLORS.recurring,
+  },
+  formRecurrenceText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  formRecurrenceTextActive: {
+    color: COLORS.recurring,
+  },
+  formIntervalContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceVariant,
+    borderRadius: 16,
+    padding: 16,
+  },
+  formIntervalLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+    marginRight: 12,
+  },
+  formIntervalInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  formIntervalInput: {
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 10,
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    textAlign: 'center',
+    width: 60,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  formIntervalUnit: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  
+  // Form Save Button
+  formSaveButton: {
+    marginTop: 20,
+    borderRadius: 18,
+    overflow: 'hidden',
+    shadowColor: COLORS.accentBlush,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  formSaveGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    gap: 8,
+  },
+  formSaveText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '800',
+  },
 });

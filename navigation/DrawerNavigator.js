@@ -2,28 +2,20 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   DrawerContentScrollView,
   DrawerItemList,
-  createDrawerNavigator,   // ✅ FIX
+  createDrawerNavigator, // ✅ FIX
 } from "@react-navigation/drawer";
-import { initializeApp } from "firebase/app";
-import {
-  getAuth,
-  signInAnonymously,
-  signInWithCustomToken,
-  signOut,
-} from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Image,
   Modal,
-  StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 
 import { useApp } from "../context/AppContext";
+import { supabase } from "../supabaseConfig";
 
 // Screens
 import GoalsScreen from "../screens/GoalsScreen";
@@ -37,27 +29,6 @@ import SharedGoalsScreen from "../screens/SharedGoalsScreen";
 
 /* ---------------- DRAWER SETUP ---------------- */
 const Drawer = createDrawerNavigator(); // ✅ FIX
-
-/* ---------------- FIREBASE SETUP ---------------- */
-const firebaseConfig =
-  typeof __firebase_config !== "undefined"
-    ? JSON.parse(__firebase_config)
-    : {};
-const initialAuthToken =
-  typeof __initial_auth_token !== "undefined"
-    ? __initial_auth_token
-    : null;
-
-let auth;
-try {
-  if (Object.keys(firebaseConfig).length > 0) {
-    const app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
-    getFirestore(app);
-  }
-} catch (e) {
-  console.error("Firebase init failed:", e);
-}
 
 /* ---------------- THEME ---------------- */
 const COLORS = {
@@ -138,17 +109,6 @@ function CustomDrawerContent(props) {
   const [loading, setLoading] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
 
-  useEffect(() => {
-    if (!auth) return;
-    (async () => {
-      try {
-        initialAuthToken
-          ? await signInWithCustomToken(auth, initialAuthToken)
-          : await signInAnonymously(auth);
-      } catch {}
-    })();
-  }, []);
-
   return (
     <DrawerContentScrollView {...props} contentContainerStyle={{ flex: 1 }}>
       <View style={styles.profileContainer}>
@@ -195,7 +155,7 @@ function CustomDrawerContent(props) {
         type="confirm"
         message="Are you sure you want to log out?"
         onCancel={() => setConfirmVisible(false)}
-        onConfirm={() => signOut(auth)}
+        onConfirm={async () => { await supabase.auth.signOut(); }}
       />
     </DrawerContentScrollView>
   );
