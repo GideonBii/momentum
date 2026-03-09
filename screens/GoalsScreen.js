@@ -1260,7 +1260,7 @@ export default function GoalsScreen() {
         customMessage: goal.custom_notification_message || goal.customMessage, // ✅ Pass custom message
       });
 
-      console.log("✅ Goal notification scheduled for:", notificationTime.toISOString());
+     
     } catch (error) {
       console.error("Failed to schedule goal notifications:", error);
     }

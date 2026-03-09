@@ -844,7 +844,7 @@ export default function SettingsScreen() {
     setUploadingPhoto(true);
     
     try {
-      console.log("Uploading base64 image...");
+      
       
       // Instead of storing in Supabase Storage, store the base64 directly in the profile
       // This bypasses all storage permission issues
@@ -886,7 +886,7 @@ export default function SettingsScreen() {
     setUploadingPhoto(true);
     
     try {
-      console.log("Starting avatar upload from URI:", uri);
+     
       
       // Try to convert to base64 first (most reliable)
       const response = await fetch(uri);
@@ -1112,7 +1112,7 @@ export default function SettingsScreen() {
     source={{ uri: profile.profilePic }} 
     style={styles.heroAvatar}
     onError={(e) => {
-      console.log("Hero image failed to load:", profile.profilePic);
+      
       // Optionally reset the image
     }}
   />

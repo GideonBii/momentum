@@ -680,7 +680,7 @@ export default function HomeScreen() {
                   source={{ uri: profile.profilePic }} 
                   style={styles.avatarImg}
                   onError={(e) => {
-                    console.log("Image failed to load:", profile.profilePic);
+                   
                     // Optionally set a fallback
                   }}
                 />

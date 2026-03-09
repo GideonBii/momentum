@@ -748,23 +748,6 @@ export default function NotesScreen() {
                         </View>
                     </View>
 
-                    {/* Search bar inside header */}
-                    <View style={styles.headerSearch}>
-                        <Ionicons name="search-outline" size={16} color={COLORS.headerTextSoft} style={{ marginRight: 8 }} />
-                        <TextInput
-                            style={styles.headerSearchInput}
-                            placeholder="Search notes..."
-                            placeholderTextColor={COLORS.headerTextSoft}
-                            value={searchQuery}
-                            onChangeText={setSearchQuery}
-                            returnKeyType="search"
-                        />
-                        {searchQuery.length > 0 && (
-                            <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                                <Ionicons name="close-circle" size={16} color={COLORS.headerTextSoft} />
-                            </TouchableOpacity>
-                        )}
-                    </View>
                 </View>
             </Animated.View>
             
@@ -1165,23 +1148,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: 10,
     },
-    headerSearch: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: 'rgba(255,255,255,0.12)',
-        borderRadius: 14,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.18)',
-    },
-    headerSearchInput: {
-        flex: 1,
-        fontSize: 15,
-        color: COLORS.headerText,
-        padding: 0,
-        fontWeight: '400',
-    },
+
 
     // View Mode Toggle (inside dark header)
     viewModeToggle: {

@@ -116,7 +116,7 @@ export default function RegisterScreen({ navigation }) {
           privacy_accepted_date: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         });
-        console.log("✅ Profile updated for:", data.user.email);
+        
         // Push username into AppContext immediately so HomeScreen/Drawer
         // show the real name without waiting for the realtime event
         setProfileUpdates?.({ username: displayName.trim() });

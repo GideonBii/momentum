@@ -203,10 +203,7 @@ const computeProgress = (goal) => {
 
 const sendNotificationToOthers = async (userUid, participantUids, message, data, options = {}) => {
   try {
-    console.log('========================================');
-    console.log('📤 [NOTIFY] Sending notification to others');
-    console.log('📤 [NOTIFY] Current user:', userUid);
-    console.log('📤 [NOTIFY] Original participants:', participantUids);
+   
     
     if (!sendNotification || typeof sendNotification !== 'function') {
       console.error("❌ [NOTIFY] sendNotification function not available");
@@ -225,14 +222,14 @@ const sendNotificationToOthers = async (userUid, participantUids, message, data,
       .filter(uid => uid !== userUid)
       .filter((uid, index, self) => self.indexOf(uid) === index);
     
-    console.log('📤 [NOTIFY] After filtering:', otherParticipants);
+    
     
     if (otherParticipants.length === 0) {
-      console.log('⏭️ [NOTIFY] No other participants to notify');
+     
       return true;
     }
 
-    console.log(`📤 [NOTIFY] Sending to ${otherParticipants.length} user(s)`);
+    
     
     const notificationOptions = {
       type: options.type || NOTIFICATION_TYPES.GENERAL,
@@ -257,15 +254,13 @@ const sendNotificationToOthers = async (userUid, participantUids, message, data,
     );
     
     if (success) {
-      console.log(`✅ [NOTIFY] Successfully sent notifications to ${otherParticipants.length} users`);
     }
     
-    console.log('========================================');
+   
     return success;
     
   } catch (error) {
     console.error("❌ [NOTIFY] Critical error:", error);
-    console.log('========================================');
     return false;
   }
 };
@@ -1979,7 +1974,7 @@ export default function SharedGoalsScreen() {
         try {
           const token = await registerAndSaveExpoPushToken(user.id);
           if (token) {
-            console.log('✅ Push token registered for user:', user.id);
+           
           }
         } catch (error) {
           console.error('❌ Failed to register push token:', error);

@@ -595,14 +595,14 @@ export default function PlannerScreen() {
       
       const dueDate = new Date(task.dueDate);
       if (dueDate < new Date()) {
-        console.log('⏭️ Task due date is in the past');
+       
         return;
       }
       
       const notificationTime = task.notificationTime || new Date(dueDate.getTime() - 30 * 60000);
       
       if (notificationTime < new Date()) {
-        console.log('⏭️ Notification time is in the past');
+        
         return;
       }
 

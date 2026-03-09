@@ -69,7 +69,7 @@ export default function LoginScreen({ navigation }) {
       }
 
       // AppContext's onAuthStateChange will pick up the new session automatically
-      console.log("✅ Logged in:", data.user?.email);
+     
     } catch (error) {
       console.error("Login error:", error);
       Alert.alert("Error", "Login failed. Please try again.");
