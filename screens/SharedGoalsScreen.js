@@ -14,6 +14,13 @@
 // ✅ FIX: maxLength on QuickAddBar input
 // ✅ FIX: Email format validation before Firestore query
 // ✅ FIX: Delete before notify in handleDeleteGoal
+// ✅ ADDED: Leave goal functionality for non-owners
+// ✅ FIXED: Goal removal after leaving
+// ✅ IMPROVED: Leave button labeling
+// ✅ FIXED: Dashboard leave button now works
+// ✅ FIXED: Owner delete error
+// ✅ ADDED: Owner can leave goals too
+// ✅ FIXED: Goals reappearing after app reload - ensured database is properly updated
 
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -427,6 +434,7 @@ const SharedGoalCard = ({
   onPress, 
   onEdit, 
   onDelete, 
+  onLeave,
   onAddProgress,
   onToggleMilestone,
   isExpanded,
@@ -672,17 +680,26 @@ const SharedGoalCard = ({
             </TouchableOpacity>
           )}
           
+          {/* Leave button for all participants (including owners) */}
           <TouchableOpacity 
-            onPress={() => onDelete(goal)} 
-            style={[styles.actionButton, styles.deleteButton]}
+            onPress={() => onLeave(goal)} 
+            style={[styles.actionButton, styles.leaveButton]}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Ionicons 
-              name={goal.isOwner ? "trash-outline" : "close-outline"} 
-              size={20} 
-              color={goal.isOwner ? COLORS.danger : COLORS.textSecondary} 
-            />
+            <Ionicons name="exit-outline" size={20} color={COLORS.warning} />
+            <Text style={styles.leaveButtonText}>Leave</Text>
           </TouchableOpacity>
+          
+          {/* Delete button - only for owners */}
+          {goal.isOwner && (
+            <TouchableOpacity 
+              onPress={() => onDelete(goal)} 
+              style={[styles.actionButton, styles.deleteButton]}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="trash-outline" size={20} color={COLORS.danger} />
+            </TouchableOpacity>
+          )}
         </View>
       </BlurView>
     </Animated.View>
@@ -932,6 +949,7 @@ const SharedGoalDetailModal = ({
   onToggleMilestone,
   onEditGoal,
   onDeleteGoal,
+  onLeaveGoal,
   onAddCollaborator,
   onRemoveParticipant,
   canManageRoles,
@@ -1203,37 +1221,73 @@ const SharedGoalDetailModal = ({
                 {isEditing ? 'Edit Goal' : goal.title}
               </Text>
               
-              <View style={{ flexDirection: 'row', gap: 12 }}>
-                {!isEditing && goal.isOwner && (
+              {!isEditing && (
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  {/* Edit button - only for owner */}
+                  {goal.isOwner && (
+                    <TouchableOpacity
+                      onPress={handleEditToggle}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Ionicons name="create-outline" size={22} color={COLORS.shared} />
+                    </TouchableOpacity>
+                  )}
+                  
+                  {/* Delete button - only for owner */}
+                  {goal.isOwner && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        Alert.alert(
+                          "Delete Goal",
+                          "Are you sure you want to delete this goal?",
+                          [
+                            { text: "Cancel", style: "cancel" },
+                            {
+                              text: "Delete",
+                              style: "destructive",
+                              onPress: () => onDeleteGoal(goal)
+                            }
+                          ]
+                        );
+                      }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Ionicons name="trash-outline" size={22} color={COLORS.danger} />
+                    </TouchableOpacity>
+                  )}
+                  
+                  {/* Leave button for all participants (including owners) */}
                   <TouchableOpacity
-                    onPress={handleEditToggle}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  >
-                    <Ionicons name="create-outline" size={22} color={COLORS.shared} />
-                  </TouchableOpacity>
-                )}
-                {!isEditing && goal.isOwner && (
-                  <TouchableOpacity
+                    style={styles.leaveButtonHeader}
                     onPress={() => {
                       Alert.alert(
-                        "Delete Goal",
-                        "Are you sure you want to delete this goal?",
+                        goal.isOwner && (goal.participants?.length || 0) > 1 
+                          ? "Leave Goal as Owner" 
+                          : "Leave Goal",
+                        goal.isOwner && (goal.participants?.length || 0) > 1
+                          ? "As the owner, if you leave, another member will become the owner. Are you sure?"
+                          : goal.isOwner && (goal.participants?.length || 0) === 1
+                          ? "You are the only participant. Leaving will delete this goal. Are you sure?"
+                          : "Are you sure you want to leave this goal? You will no longer have access to it.",
                         [
                           { text: "Cancel", style: "cancel" },
                           {
-                            text: "Delete",
+                            text: goal.isOwner && (goal.participants?.length || 0) === 1 ? "Delete" : "Leave",
                             style: "destructive",
-                            onPress: () => onDeleteGoal(goal)
+                            onPress: () => onLeaveGoal(goal.id)
                           }
                         ]
                       );
                     }}
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   >
-                    <Ionicons name="trash-outline" size={22} color={COLORS.danger} />
+                    <Ionicons name="exit-outline" size={22} color={COLORS.warning} />
+                    <Text style={styles.leaveButtonHeaderText}>
+                      {goal.isOwner && (goal.participants?.length || 0) > 1 ? "Leave as Owner" : "Leave"}
+                    </Text>
                   </TouchableOpacity>
-                )}
-              </View>
+                </View>
+              )}
             </View>
 
             <ScrollView
@@ -1874,7 +1928,6 @@ export default function SharedGoalsScreen() {
   const [isOffline, setIsOffline] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState("list");
-  const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [expandedGoalId, setExpandedGoalId] = useState(null);
   const [activeTab, setActiveTab] = useState('progress');
@@ -2059,7 +2112,7 @@ export default function SharedGoalsScreen() {
       const { data, error } = await supabase
         .from("shared_goals")
         .select("*")
-        .filter("participants", "cs", `["${user.id}"]`);
+        .filter("participants", "cs", JSON.stringify([user.id]));
 
       if (error) {
         console.error("Shared goals fetch error:", error);
@@ -2108,7 +2161,7 @@ export default function SharedGoalsScreen() {
   }, [user, fetchUserDetails]);
 
   /* ================================================================================
-     🔍 FILTERING & SEARCH
+     🔍 FILTERING - Removed search, only category filtering now
      ================================================================================ */
 
   useEffect(() => {
@@ -2118,16 +2171,8 @@ export default function SharedGoalsScreen() {
       filtered = filtered.filter(g => g.category === selectedCategory);
     }
     
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(g => 
-        g.title?.toLowerCase().includes(query) ||
-        g.description?.toLowerCase().includes(query)
-      );
-    }
-    
     setFilteredGoals(filtered);
-  }, [goals, selectedCategory, searchQuery]);
+  }, [goals, selectedCategory]);
 
   /* ================================================================================
      👥 COLLABORATOR RESOLUTION
@@ -2325,7 +2370,11 @@ export default function SharedGoalsScreen() {
     setLoading(true);
     
     try {
-      const participantUids = [...new Set([user.id, ...createForm.collaborators.map(c => c.uid)])];
+      const participantUids = [
+        user.id, 
+        ...createForm.collaborators.map(c => c.uid)
+      ];
+      
       const participantDetails = [
         { 
           uid: user.id, 
@@ -2407,7 +2456,7 @@ export default function SharedGoalsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [createForm, user]);
+  }, [createForm, user, userName, userPhoto]);
 
   const resetCreateForm = useCallback(() => {
     setCreateForm({
@@ -2484,7 +2533,7 @@ export default function SharedGoalsScreen() {
       console.error("Add progress error:", error);
       Alert.alert("Error", "Failed to update progress");
     }
-  }, [goals, user]);
+  }, [goals, user, userName]);
 
   const handleAddComment = useCallback(async (goalId, comment) => {
     const goal = goals.find(g => g.id === goalId);
@@ -2580,7 +2629,7 @@ export default function SharedGoalsScreen() {
       console.error("Add milestone error:", error);
       Alert.alert("Error", "Failed to add milestone. Please try again.");
     }
-  }, [goals, user]);
+  }, [goals, user, userName]);
 
   const handleToggleMilestone = useCallback(async (goalId, index) => {
     const goal = goals.find(g => g.id === goalId);
@@ -2650,7 +2699,7 @@ export default function SharedGoalsScreen() {
       console.error("Toggle milestone error:", error);
       Alert.alert("Error", "Failed to update milestone. Please try again.");
     }
-  }, [goals, user]);
+  }, [goals, user, userName]);
 
   const handleEditGoal = useCallback(async (goalId, updatedData) => {
     // ✅ FIX: Added try/catch — previously silent failure
@@ -2688,54 +2737,158 @@ export default function SharedGoalsScreen() {
       Alert.alert("Error", "Failed to update goal. Please try again.");
       throw error; // Re-throw so edit form can stay open
     }
-  }, [goals, user]);
+  }, [goals, user, userName]);
 
-  const handleDeleteGoal = useCallback(async (goal) => {
+  const handleDeleteGoal = async (goal) => {
+    // ✅ FIX: Now accepts the goal object instead of just goalId
+    if (!goal || !goal.id) return;
+    
+    // 1. Physical Feedback
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
     Alert.alert(
-      goal.isOwner ? "Delete Shared Goal" : "Remove Shared Goal",
-      goal.isOwner 
-        ? `Are you sure you want to delete "${goal.title}"?`
-        : `Remove "${goal.title}" from your shared goals?`,
+      "Delete Shared Goal",
+      "Are you sure? This will remove the goal for all participants. This action cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: goal.isOwner ? "Delete" : "Remove",
+          text: "Delete",
           style: "destructive",
           onPress: async () => {
             try {
-              // ✅ FIX: Delete FIRST, then notify.
-              // Previously notifications fired before the delete — if delete
-              // failed, participants got a "goal deleted" alert but goal still existed.
-              await supabase.from("shared_goals").delete().eq("id", goal.id);
+              setLoading(true);
+              
+              // 2. Optimized Deletion: 
+              const { error } = await supabase
+                .from("shared_goals")
+                .delete()
+                .eq("id", goal.id);
 
-              if (goal.isOwner) {
-                await sendNotificationToOthers(
-                  user.id,
-                  goal.participants?.filter(uid => uid !== user.id) || [],
-                  `The goal "${goal.title}" was deleted by ${userName}`,
-                  { 
-                    goalId: goal.id,
-                    goalTitle: goal.title
-                  },
-                  {
-                    type: NOTIFICATION_TYPES?.GOAL_DELETED,
-                    pushTitle: '🗑️ Goal Deleted',
-                    senderName: userName,
-                  }
-                );
-              }
+              if (error) throw error;
 
+              // 3. UI Update
+              setGoals(prev => prev.filter(g => g.id !== goal.id));
+              setDetailModalVisible(false);
+              
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert(goal.isOwner ? "🗑️ Goal deleted" : "✅ Goal removed");
+              Alert.alert("Success", "Goal deleted successfully.");
             } catch (error) {
-              console.error("Delete error:", error);
-              Alert.alert("Error", "Failed to delete goal");
+              console.error("Delete Error:", error);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              Alert.alert("Error", "You don't have permission or a connection error occurred.");
+            } finally {
+              setLoading(false);
             }
-          }
-        }
+          },
+        },
       ]
     );
-  }, [user]);
+  };
+
+  const handleLeaveGoal = useCallback(async (goal) => {
+    // ✅ FIX: Now accepts the goal object instead of just goalId
+    if (!goal || !goal.id) return;
+    
+    try {
+      setLoading(true);
+      
+      // Remove user from participants array
+      const updatedParticipants = (goal.participants || []).filter(uid => uid !== user.id);
+      const updatedParticipantDetails = (goal.participant_details || []).filter(p => p.uid !== user.id);
+      
+      // If this was the last participant OR owner is leaving and there are other participants
+      if (updatedParticipants.length === 0) {
+        // No participants left, delete the goal
+        const { error } = await supabase
+          .from("shared_goals")
+          .delete()
+          .eq("id", goal.id);
+          
+        if (error) throw error;
+      } else {
+        // Check if the person leaving is the owner
+        if (goal.isOwner && updatedParticipants.length > 0) {
+          // Transfer ownership to the next participant (first one in the list)
+          const newOwnerId = updatedParticipants[0];
+          
+          const { error } = await supabase
+            .from("shared_goals")
+            .update({
+              participants: updatedParticipants,
+              participant_details: updatedParticipantDetails,
+              owner_id: newOwnerId, // Transfer ownership
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", goal.id);
+            
+          if (error) throw error;
+          
+          // Notify new owner
+          await sendNotificationToOthers(
+            user.id,
+            [newOwnerId],
+            `You are now the owner of "${goal.title}" because the previous owner left.`,
+            { 
+              goalId: goal.id,
+              goalTitle: goal.title
+            },
+            {
+              type: NOTIFICATION_TYPES?.GOAL_UPDATED,
+              pushTitle: '👑 New Goal Owner',
+              senderName: userName,
+            }
+          );
+        } else {
+          // Just a regular participant leaving
+          const { error } = await supabase
+            .from("shared_goals")
+            .update({
+              participants: updatedParticipants,
+              participant_details: updatedParticipantDetails,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", goal.id);
+            
+          if (error) throw error;
+        }
+        
+        // Notify remaining participants (excluding the user who left)
+        if (updatedParticipants.length > 0) {
+          await sendNotificationToOthers(
+            user.id,
+            updatedParticipants,
+            `${userName} left the goal "${goal.title}"`,
+            { 
+              goalId: goal.id,
+              goalTitle: goal.title
+            },
+            {
+              type: NOTIFICATION_TYPES?.PARTICIPANT_REMOVED,
+              pushTitle: '👋 Participant Left',
+              senderName: userName,
+            }
+          );
+        }
+      }
+      
+      // ✅ FIX: Immediately remove the goal from local state
+      setGoals(prev => prev.filter(g => g.id !== goal.id));
+      setSelectedDetailGoal(null);
+      
+      // Close modal and show success
+      setDetailModalVisible(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Success", goal.isOwner && (goal.participants?.length || 0) > 1 
+        ? "You have left the goal. Ownership has been transferred." 
+        : "You have left the goal");
+      
+    } catch (error) {
+      console.error("Leave goal error:", error);
+      Alert.alert("Error", "Failed to leave goal");
+    } finally {
+      setLoading(false);
+    }
+  }, [goals, user, userName]);
 
   const handleQuickAdd = async ({ title, dueDate }) => {
     if (!user) return;
@@ -2784,11 +2937,6 @@ export default function SharedGoalsScreen() {
     setDetailModalVisible(true);
   }, []);
 
-  const clearSearch = () => {
-    setSearchQuery("");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
-
   const canManageRoles = useCallback((goal) => {
     if (!goal || !user?.id) return false;
     return goal.owner_id === user.id || goal.creator_id === user.id;
@@ -2825,14 +2973,15 @@ export default function SharedGoalsScreen() {
       console.error("Remove participant error:", error);
       Alert.alert("Error", "Failed to remove participant");
     }
-  }, [goals, user]);
+  }, [goals, user, userName]);
 
   const renderGoalItem = ({ item }) => (
     <SharedGoalCard
       goal={item}
-      onPress={openGoalDetail} // ✅ Opens detail modal, NOT edit
-      onEdit={() => openGoalDetail(item)} // ✅ Long press still opens detail (can edit from there)
+      onPress={openGoalDetail}
+      onEdit={() => openGoalDetail(item)}
       onDelete={handleDeleteGoal}
+      onLeave={handleLeaveGoal}
       onAddProgress={handleAddProgress}
       onToggleMilestone={handleToggleMilestone}
       isExpanded={expandedGoalId === item.id}
@@ -2925,22 +3074,6 @@ export default function SharedGoalsScreen() {
               </TouchableOpacity>
             </View>
           </View>
-          
-          <View style={styles.searchContainer}>
-            <Ionicons name="search" size={18} color={COLORS.textTertiary} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search shared goals..."
-              placeholderTextColor={COLORS.placeholder}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-            {searchQuery ? (
-              <TouchableOpacity onPress={clearSearch}>
-                <Ionicons name="close-circle" size={18} color={COLORS.textTertiary} />
-              </TouchableOpacity>
-            ) : null}
-          </View>
         </View>
       </Animated.View>
       
@@ -3009,12 +3142,10 @@ export default function SharedGoalsScreen() {
         <View style={styles.emptyState}>
           <Ionicons name="people-outline" size={64} color={COLORS.textTertiary} />
           <Text style={styles.emptyTitle}>
-            {searchQuery ? "No goals found" : "No shared goals yet"}
+            No shared goals yet
           </Text>
           <Text style={styles.emptyText}>
-            {searchQuery 
-              ? "Try a different search term" 
-              : "Create a shared goal to collaborate with others"}
+            Create a shared goal to collaborate with others
           </Text>
           <TouchableOpacity
             style={styles.emptyButton}
@@ -3346,6 +3477,7 @@ export default function SharedGoalsScreen() {
         onToggleMilestone={handleToggleMilestone}
         onEditGoal={handleEditGoal}
         onDeleteGoal={handleDeleteGoal}
+        onLeaveGoal={handleLeaveGoal}
         onAddCollaborator={handleAddCollaborator}
         onRemoveParticipant={handleRemoveParticipant}
         canManageRoles={canManageRoles}
@@ -3762,9 +3894,34 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     padding: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   deleteButton: {
     marginLeft: 'auto',
+  },
+  leaveButton: {
+    marginLeft: 'auto',
+  },
+  leaveButtonText: {
+    fontSize: 12,
+    color: COLORS.warning,
+    fontWeight: '600',
+  },
+  leaveButtonHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: COLORS.warning + '15',
+    borderRadius: 16,
+  },
+  leaveButtonHeaderText: {
+    fontSize: 14,
+    color: COLORS.warning,
+    fontWeight: '600',
   },
   
   quickAddContainer: {

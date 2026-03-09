@@ -3,6 +3,8 @@
 // ✅ UPDATED: Navigation structure for proper drawer/profile navigation
 // ✅ FIXED: All imports and dependencies
 // ✅ Enhanced with proper error handling
+// ✅ FIXED: Drawer image loading with proper error handling
+// ✅ FIXED: Profile updates now sync across all components
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import "react-native-gesture-handler";
@@ -51,7 +53,6 @@ import JournalScreen from "./screens/JournalScreen";
 import LoginScreen from "./screens/LoginScreen";
 import NotesScreen from "./screens/NotesScreen";
 import PlannerScreen from "./screens/PlannerScreen";
-import ProfileScreen from "./screens/ProfileScreen";
 import RegisterScreen from "./screens/RegisterScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import SharedGoalsScreen from "./screens/SharedGoalsScreen";
@@ -187,7 +188,6 @@ function BottomTabs({ navigation }) {
           options={{ tabBarButton: () => null }}
         />
         <Tab.Screen name="Settings" component={SettingsScreen} options={{ tabBarButton: () => null }} />
-        <Tab.Screen name="Profile" component={ProfileScreen} options={{ tabBarButton: () => null }} />
       </Tab.Navigator>
 
       {/* Custom Dock */}
@@ -232,7 +232,7 @@ function BottomTabs({ navigation }) {
    Custom Drawer Content
    ====================== */
 function CustomDrawerContent(props) {
-  const { user, profile } = useApp();
+  const { user, profile, imageLoadError, updateProfile } = useApp();
   const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -261,6 +261,11 @@ function CustomDrawerContent(props) {
     }
   };
 
+  const handleImageError = useCallback(() => {
+    console.log("Drawer image failed to load");
+    // Don't try to update profile here, just let it show placeholder
+  }, []);
+
   return (
     <DrawerContentScrollView
       {...props}
@@ -275,20 +280,27 @@ function CustomDrawerContent(props) {
         {/* Avatar with pencil edit badge */}
         <View style={styles.drawerAvatarWrap}>
           <TouchableOpacity
-            onPress={() => props.navigation.navigate("Tabs", { screen: "Profile" })}
+            onPress={() => props.navigation.navigate("Tabs", { screen: "Settings" })}
             activeOpacity={0.85}
           >
-            {profile?.profilePic ? (
-              <Image source={{ uri: profile.profilePic }} style={styles.drawerAvatar} />
+            {profile?.profilePic && !imageLoadError ? (
+              <Image 
+                key={profile.profilePic}
+                source={{ uri: profile.profilePic }} 
+                style={styles.drawerAvatar}
+                onError={handleImageError}
+              />
             ) : (
               <View style={[styles.drawerAvatar, styles.drawerAvatarPlaceholder]}>
-                <Ionicons name="person" size={36} color="#fff" />
+                <Text style={styles.drawerAvatarInitial}>
+                  {(profile?.username || user?.email || "U")[0].toUpperCase()}
+                </Text>
               </View>
             )}
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.drawerEditBadge}
-            onPress={() => props.navigation.navigate("Tabs", { screen: "Profile" })}
+            onPress={() => props.navigation.navigate("Tabs", { screen: "Settings" })}
             activeOpacity={0.8}
           >
             <Ionicons name="pencil" size={10} color="#fff" />
@@ -298,7 +310,7 @@ function CustomDrawerContent(props) {
         {/* Name + email */}
         <TouchableOpacity
           style={{ flex: 1 }}
-          onPress={() => props.navigation.navigate("Tabs", { screen: "Profile" })}
+          onPress={() => props.navigation.navigate("Tabs", { screen: "Settings" })}
           activeOpacity={0.7}
         >
           <Text style={styles.drawerName} numberOfLines={1}>
@@ -675,6 +687,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accentBlush,
     justifyContent: "center",
     alignItems: "center",
+  },
+  drawerAvatarInitial: {
+    fontSize: 24,
+    fontWeight: "700",
+    color: "#fff",
   },
   drawerEditBadge: {
     position: "absolute",

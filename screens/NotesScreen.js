@@ -41,32 +41,44 @@ const { width, height } = Dimensions.get("window");
    ================================================================================ */
 
 const COLORS = {
-    backgroundBase: "#F5F8F6", // Light green-tinted background
+    backgroundBase: "#F5F8F6",
     card: "#FFFFFF",
-    textPrimary: "#1C2E28", // Dark green-black
-    textSecondary: "#4A6B5F", // Medium green
-    accentBlush: "#5D8B7E", // Primary green (from home screen gradient)
-    accentWarm: "#052b20", // Dark green (from home screen gradient)
-    sage: "#2C4A3E", // Deep green
-    nudeShadow: "rgba(93,139,126,0.12)", // Green-tinted shadow
+    textPrimary: "#1C2E28",
+    textSecondary: "#4A6B5F",
+    accentBlush: "#5D8B7E",
+    accentWarm: "#052b20",
+    sage: "#2C4A3E",
+    nudeShadow: "rgba(93,139,126,0.12)",
     shadowDark: "rgba(0,0,0,0.06)",
     danger: "#FF6347",
     success: "#5D8B7E",
     info: "#2196F3",
     warning: "#FFA726",
-    surfaceVariant: "#EAF1ED", // Light green surface
-    textTertiary: "#6B8F81", // Muted green
-    cardBorder: "rgba(93,139,126,0.2)", // Green border
-    gradientStart: "#F0F7F3", // Light green gradient start
-    gradientEnd: "#E4EDE7", // Soft green gradient end
-    overlay: "rgba(28,46,40,0.4)", // Dark green overlay
-    placeholder: "#8AA89B", // Green-tinged placeholder
-    
-    // 🎯 ENHANCED FORMATTING COLORS - Green theme
-    formatActive: "#2C4A3E", // Deep green when active
-    formatInactive: "#6B8F81", // Muted green when inactive
-    formatBackground: "#E0EAE4", // Light green background for active state
-    toolbarActiveBg: "#5D8B7E", // Primary green background for active button
+    surfaceVariant: "#EAF1ED",
+    textTertiary: "#6B8F81",
+    cardBorder: "rgba(93,139,126,0.2)",
+
+    // ── Gradient tokens (all 3 stops defined, warm-shifted for Android) ──────
+    // Pure-green gradients band on 8-bit Android panels; adding a warm ivory
+    // base stop forces the GPU to blend across R+G channels, eliminating banding.
+    gradientStart: "#F4FAF7", // near-white with a breath of green
+    gradientMid:   "#D6EDE4", // soft sage — PREVIOUSLY MISSING (caused black fallback)
+    gradientEnd:   "#C2E0D5", // muted seafoam
+    gradientLight: "#E8F5EF", // lightest tint for empty-state ring — PREVIOUSLY MISSING
+
+    // ── Header tokens (PREVIOUSLY MISSING — caused undefined-color crashes) ──
+    headerText:     "#1C2E28", // legible dark green on light gradient
+    headerTextSoft: "#5D8B7E", // secondary label / placeholder in header
+    glassBorder:    "rgba(255,255,255,0.22)", // frosted edge on quick-add bar
+
+    overlay: "rgba(28,46,40,0.4)",
+    placeholder: "#8AA89B",
+
+    // Formatting
+    formatActive:    "#2C4A3E",
+    formatInactive:  "#6B8F81",
+    formatBackground:"#E0EAE4",
+    toolbarActiveBg: "#5D8B7E",
 };
 
 /* ================================================================================
@@ -280,8 +292,8 @@ const NoteCard = ({ note, onPress, onEdit, onDelete, viewMode }) => {
             >
                 <LinearGradient
                     colors={note.content?.includes('checkbox')
-                        ? [COLORS.sage, COLORS.accentBlush]
-                        : [COLORS.accentBlush, COLORS.gradientEnd]}
+                        ? [COLORS.accentBlush, COLORS.sage]
+                        : [COLORS.accentBlush, COLORS.gradientMid]}
                     style={styles.noteTopBar}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 0 }}
@@ -377,7 +389,7 @@ const QuickAddBar = ({ onAdd }) => {
                     {text.length > 0 && (
                         <TouchableOpacity onPress={handleSubmit} style={styles.quickAddSubmit} activeOpacity={0.8}>
                             <LinearGradient
-                                colors={[COLORS.accentBlush, COLORS.gradientStart]}
+                                colors={[COLORS.accentBlush, COLORS.sage]}
                                 style={styles.quickAddSubmitGradient}
                                 start={{ x: 0, y: 0 }}
                                 end={{ x: 1, y: 1 }}
@@ -803,7 +815,7 @@ export default function NotesScreen() {
                             activeOpacity={0.85}
                         >
                             <LinearGradient
-                                colors={[COLORS.gradientStart, COLORS.gradientMid]}
+                                colors={[COLORS.accentBlush, COLORS.sage]}
                                 style={styles.emptyButtonGradient}
                                 start={{ x: 0, y: 0 }}
                                 end={{ x: 1, y: 1 }}

@@ -7,12 +7,15 @@
 // ✅ Production-ready error handling
 // ✅ Offline-aware with connection status
 // ✅ Matches all other screens perfectly
+// ✅ FIXED: Profile updates now sync across all screens
+// ✅ FIXED: Removed any reference to non-existent 'App' property
 
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import NetInfo from '@react-native-community/netinfo';
 import { BlurView } from 'expo-blur';
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from 'expo-linear-gradient';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +28,7 @@ import {
   Modal,
   Platform,
   SafeAreaView,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Switch,
@@ -48,28 +52,37 @@ const { width, height } = Dimensions.get('window');
    ================================================================================ */
 
 const COLORS = {
-  backgroundBase: "#FAFAFA",
+  // Core
+  backgroundBase: "#F7F3EF",
   card: "#FFFFFF",
-  textPrimary: "#4A3228",
-  textSecondary: "#A98467",
-  accentBlush: "#D8A39D",
-  accentWarm: "#E3B777",
-  sage: "#5D8B7E",
-  nudeShadow: "rgba(216,163,157,0.12)",
-  shadowDark: "rgba(0,0,0,0.06)",
-  danger: "#FF6347",
-  success: "#5D8B7E",
-  info: "#2196F3",
-  warning: "#FFA726",
-  surfaceVariant: "#F8F2F0",
-  textTertiary: "#B7A29E",
-  cardBorder: "rgba(216,163,157,0.2)",
-  gradientStart: "#FFF9F8",
-  gradientEnd: "#FAF0ED",
-  overlay: "rgba(74,50,40,0.4)",
-  placeholder: "#C7B5B0",
-  destructive: "#E74C3C",
-  disabled: "#CCCCCC",
+  // Text
+  textPrimary: "#2C1810",
+  textSecondary: "#8A6F5E",
+  textTertiary: "#B8A49A",
+  placeholder: "#C4B0A8",
+  // Accents
+  accentBlush: "#C4746E",
+  accentWarm: "#C9924A",
+  accentPlum: "#795D94",
+  accentPlumLight: "#A98AC4",
+  sage: "#4E7A6E",
+  // Surfaces
+  surfaceVariant: "#F0EAE6",
+  cardBorder: "rgba(196,116,110,0.15)",
+  // Gradients
+  gradientStart: "#2C1810",
+  gradientMid: "#4A2C3A",
+  gradientEnd: "#795D94",
+  // Functional
+  nudeShadow: "rgba(44,24,16,0.12)",
+  shadowDark: "rgba(0,0,0,0.08)",
+  danger: "#C0392B",
+  success: "#4E7A6E",
+  info: "#2980B9",
+  warning: "#D4802A",
+  overlay: "rgba(44,24,16,0.5)",
+  destructive: "#C0392B",
+  disabled: "#C4B0A8",
 };
 
 /* ================================================================================
@@ -99,9 +112,11 @@ const validatePasswordsMatch = (password, confirmPassword) => password === confi
    ================================================================================ */
 
 const SettingCard = ({ children, style }) => (
-  <BlurView intensity={90} tint="light" style={[styles.settingCard, style]}>
-    {children}
-  </BlurView>
+  <View style={[styles.settingCard, style]}>
+    <BlurView intensity={60} tint="light" style={styles.settingCardBlur}>
+      {children}
+    </BlurView>
+  </View>
 );
 
 /* ================================================================================
@@ -196,14 +211,20 @@ const SettingRow = ({
 const SettingsHeader = ({ title, subtitle, isConnected }) => {
   return (
     <View style={styles.headerContent}>
-      <View>
+      <LinearGradient
+        colors={[COLORS.gradientStart, COLORS.gradientMid, COLORS.gradientEnd]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.headerTextBlock}>
+        <Text style={styles.headerEyebrow}>MOMENTUM</Text>
         <Text style={styles.headerTitle}>{title}</Text>
         <Text style={styles.headerSubtitle}>{subtitle}</Text>
       </View>
-      
       {!isConnected && (
         <View style={styles.offlineBadge}>
-          <Ionicons name="cloud-offline" size={16} color="#fff" />
+          <Ionicons name="cloud-offline" size={14} color="#fff" />
           <Text style={styles.offlineText}>Offline</Text>
         </View>
       )}
@@ -248,6 +269,7 @@ const SettingsModal = ({ visible, onClose, title, children }) => {
         
         <Animated.View style={[styles.modalContainer, { transform: [{ translateY: slideAnim }] }]}>
           <BlurView intensity={100} tint="light" style={styles.modalBlur}>
+            <View style={styles.modalDragHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{title}</Text>
               <TouchableOpacity onPress={onClose} style={styles.modalCloseButton}>
@@ -348,7 +370,7 @@ const ToastMessage = ({ visible, message, type = 'success', onHide }) => {
    ================================================================================ */
 
 export default function SettingsScreen() {
-  const { user, profile, setUser } = useApp();
+  const { user, profile, updateProfile } = useApp();
 
   // Settings State
   const [notifications, setNotifications] = useState(true);
@@ -382,6 +404,24 @@ export default function SettingsScreen() {
 
   // Toast
   const [toast, setToast] = useState({ visible: false, message: "", type: "success" });
+
+  // ── Profile Edit State ──
+  const [isProfileModalVisible, setIsProfileModalVisible] = useState(false);
+  const [editUsername, setEditUsername] = useState("");
+  const [editBio, setEditBio] = useState("");
+  const [editDob, setEditDob] = useState("");
+  const [editPhotoURL, setEditPhotoURL] = useState(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [showDobPicker, setShowDobPicker] = useState(false);
+
+  // ── Email Change State ──
+  const [isEmailModalVisible, setIsEmailModalVisible] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [emailPassword, setEmailPassword] = useState("");
+  const [showEmailPassword, setShowEmailPassword] = useState(false);
+  const [emailError, setEmailError] = useState("");
+  const [isEmailUpdating, setIsEmailUpdating] = useState(false);
 
   // Animation
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -722,7 +762,6 @@ export default function SettingsScreen() {
                           
                           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                           showToast("Account successfully deleted", 'success');
-                          setUser(null);
                         } catch (deleteError) {
                           console.error("Final deletion error:", deleteError);
                           setDeleteAccountError(ERROR_MESSAGES.DELETE_ACCOUNT_FAILED);
@@ -751,11 +790,237 @@ export default function SettingsScreen() {
       setDeleteAccountError(ERROR_MESSAGES.DELETE_ACCOUNT_FAILED);
       setIsDeletingAccount(false);
     }
-  }, [user, deleteConfirmation, isConnected, deleteUserData, setUser]);
+  }, [user, deleteConfirmation, isConnected, deleteUserData]);
 
   /* ================================================================================
-     🎯 TOAST HELPER
+     👤 PROFILE HANDLERS - FIXED VERSIONS
      ================================================================================ */
+
+ const openProfileModal = useCallback(() => {
+    setEditUsername(profile?.username || "");
+    setEditBio(profile?.bio || "");
+    setEditDob(profile?.dob || "");
+    setEditPhotoURL(profile?.profilePic || null);
+    setIsProfileModalVisible(true);
+  }, [profile]);
+
+  const handlePickImage = useCallback(async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        showToast('Permission to access gallery is required!', 'error');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.3, // Lower quality for smaller base64
+        base64: true, // This is key - get base64 data
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+        
+        // If we have base64, use it directly
+        if (asset.base64) {
+          const base64Image = `data:image/jpeg;base64,${asset.base64}`;
+          uploadAvatarBase64(base64Image);
+        } else {
+          // Fallback to URI method
+          uploadAvatar(asset.uri);
+        }
+      }
+    } catch (error) {
+      console.error("Image picker error:", error);
+      showToast("Failed to pick image", "error");
+    }
+  }, []);
+
+  // NEW: Upload using base64 (MOST RELIABLE METHOD)
+  const uploadAvatarBase64 = useCallback(async (base64Image) => {
+    if (!user) return;
+    setUploadingPhoto(true);
+    
+    try {
+      console.log("Uploading base64 image...");
+      
+      // Instead of storing in Supabase Storage, store the base64 directly in the profile
+      // This bypasses all storage permission issues
+      
+      // Update profile with base64 image
+      const { error: dbError } = await supabase
+        .from("profiles")
+        .update({ 
+          profile_pic: base64Image,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", user.id);
+
+      if (dbError) throw dbError;
+
+      // Update local state
+      setEditPhotoURL(base64Image);
+      
+      // Update app context
+      const success = await updateProfile({ profile_pic: base64Image });
+      
+      if (success) {
+        showToast("Profile picture updated!", "success");
+      } else {
+        throw new Error("Failed to update profile in context");
+      }
+      
+    } catch (err) {
+      console.error("Base64 upload error:", err);
+      showToast("Upload failed: " + (err.message || "Unknown error"), "error");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }, [user, updateProfile]);
+
+  // Fallback URI upload method (tries storage first, falls back to base64)
+  const uploadAvatar = useCallback(async (uri) => {
+    if (!user) return;
+    setUploadingPhoto(true);
+    
+    try {
+      console.log("Starting avatar upload from URI:", uri);
+      
+      // Try to convert to base64 first (most reliable)
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      
+      // Convert blob to base64
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      
+      reader.onloadend = async () => {
+        const base64data = reader.result;
+        
+        // Update profile with base64 image
+        const { error: dbError } = await supabase
+          .from("profiles")
+          .update({ 
+            profile_pic: base64data,
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", user.id);
+
+        if (dbError) throw dbError;
+
+        // Update local state
+        setEditPhotoURL(base64data);
+        
+        // Update app context
+        const success = await updateProfile({ profile_pic: base64data });
+        
+        if (success) {
+          showToast("Profile picture updated!", "success");
+        } else {
+          throw new Error("Failed to update profile in context");
+        }
+        
+        setUploadingPhoto(false);
+      };
+      
+      reader.onerror = () => {
+        throw new Error("Failed to convert image to base64");
+      };
+      
+    } catch (err) {
+      console.error("Upload error:", err);
+      showToast("Upload failed: " + (err.message || "Unknown error"), "error");
+      setUploadingPhoto(false);
+    }
+  }, [user, updateProfile]);
+
+  const handleSaveProfile = useCallback(async () => {
+    if (!user) return;
+    setSavingProfile(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    try {
+      const updates = {
+        username: editUsername.trim(),
+        bio: editBio.trim(),
+        dob: editDob || null,
+      };
+      
+      // If there's a new photo URL, include it
+      if (editPhotoURL && editPhotoURL !== profile?.profilePic) {
+        updates.profile_pic = editPhotoURL;
+      }
+      
+      // Update profile
+      const success = await updateProfile(updates);
+      
+      if (success) {
+        setIsProfileModalVisible(false);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast("Profile updated!", "success");
+      } else {
+        throw new Error("Failed to update profile");
+      }
+    } catch (err) {
+      console.error("Save error:", err);
+      showToast("Save failed: " + err.message, "error");
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [user, editUsername, editBio, editDob, editPhotoURL, profile?.profilePic, updateProfile]);
+
+
+
+
+
+
+
+  /* ================================================================================
+     📧 EMAIL CHANGE HANDLER
+     ================================================================================ */
+
+  const handleChangeEmail = useCallback(async () => {
+    if (!newEmail.includes("@")) {
+      setEmailError("Please enter a valid email address.");
+      return;
+    }
+    if (!emailPassword) {
+      setEmailError("Please enter your current password.");
+      return;
+    }
+    if (!isConnected) {
+      setEmailError(ERROR_MESSAGES.NETWORK_ERROR);
+      return;
+    }
+    setIsEmailUpdating(true);
+    setEmailError("");
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: emailPassword,
+      });
+      if (signInError) {
+        setEmailError("Password is incorrect.");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        return;
+      }
+      const { error: updateError } = await supabase.auth.updateUser({ email: newEmail.trim() });
+      if (updateError) throw updateError;
+
+      setIsEmailModalVisible(false);
+      setNewEmail("");
+      setEmailPassword("");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast("Confirmation sent to " + newEmail.trim() + ". Check your inbox.", "info");
+    } catch (err) {
+      setEmailError(err.message || "Failed to update email.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsEmailUpdating(false);
+    }
+  }, [user, newEmail, emailPassword, isConnected]);
 
   const showToast = useCallback((message, type = 'success') => {
     setToast({ visible: true, message, type });
@@ -810,14 +1075,9 @@ export default function SettingsScreen() {
       
       {/* Animated Header */}
       <Animated.View style={[styles.header, { height: headerHeight }]}>
-        <LinearGradient
-          colors={[COLORS.gradientStart, COLORS.gradientEnd]}
-          style={StyleSheet.absoluteFill}
-        />
-        
         <SettingsHeader
           title="Settings"
-          subtitle="Customize your experience"
+          subtitle="Personalize your Momentum"
           isConnected={isConnected}
         />
       </Animated.View>
@@ -832,60 +1092,78 @@ export default function SettingsScreen() {
         )}
         scrollEventThrottle={16}
       >
-        {/* Profile Card */}
-         <SettingCard>
-    <View style={styles.profileCard}>
-      {profile?.profilePic ? (
-        <Image source={{ uri: profile.profilePic }} style={styles.avatarGradient} />
-      ) : (
-        <LinearGradient
-          colors={[COLORS.accentBlush, COLORS.accentWarm]}
-          style={styles.avatarGradient}
-        >
-          <Text style={styles.avatarText}>
-            {profile?.username?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'}
-          </Text>
-        </LinearGradient>
-      )}
-      <View style={styles.profileInfo}>
-        <Text style={styles.profileName}>
-          {profile?.username || user?.email?.split('@')[0] || "Momentum User"}
-        </Text>
-        <Text style={styles.profileEmail} numberOfLines={1}>
-          {user?.email}
-        </Text>
-      </View>
-    </View>
-  </SettingCard>
+        {/* Hero Profile Card */}
+        <TouchableOpacity onPress={openProfileModal} activeOpacity={0.92} style={styles.heroCard}>
+          <LinearGradient
+            colors={[COLORS.gradientStart, COLORS.gradientMid, COLORS.gradientEnd]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.heroGradient}
+          >
+            {/* Decorative circles */}
+            <View style={styles.heroCircle1} />
+            <View style={styles.heroCircle2} />
+
+            <View style={styles.heroRow}>
+              <View style={styles.heroAvatarWrap}>
+                {profile?.profilePic ? (
+  <Image 
+    key={profile.profilePic}
+    source={{ uri: profile.profilePic }} 
+    style={styles.heroAvatar}
+    onError={(e) => {
+      console.log("Hero image failed to load:", profile.profilePic);
+      // Optionally reset the image
+    }}
+  />
+) : (
+  <View style={styles.heroAvatarFallback}>
+    <Text style={styles.heroAvatarInitial}>
+      {(profile?.username || user?.email || "U")[0].toUpperCase()}
+    </Text>
+  </View>
+)}
+                <View style={styles.heroEditBadge}>
+                  <Ionicons name="pencil" size={11} color="#fff" />
+                </View>
+              </View>
+
+              <View style={styles.heroInfo}>
+                <Text style={styles.heroName} numberOfLines={1}>
+                  {profile?.username || user?.email?.split("@")[0] || "Momentum User"}
+                </Text>
+                <Text style={styles.heroEmail} numberOfLines={1}>{user?.email}</Text>
+                {profile?.bio ? (
+                  <Text style={styles.heroBio} numberOfLines={1}>{profile.bio}</Text>
+                ) : null}
+              </View>
+
+              <View style={styles.heroChevronWrap}>
+                <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.6)" />
+              </View>
+            </View>
+
+            <View style={styles.heroFooter}>
+              <View style={styles.heroPill}>
+                <View style={styles.heroPillDot} />
+                <Text style={styles.heroPillText}>Tap to edit profile</Text>
+              </View>
+            </View>
+          </LinearGradient>
+        </TouchableOpacity>
 
         {/* Account Section */}
-        <Text style={styles.sectionHeader}>
-          <Ionicons name="person-outline" size={16} color={COLORS.textSecondary} />
-          <Text style={styles.sectionHeaderText}> Account</Text>
-        </Text>
+        <Text style={styles.sectionLabel}>Account & Security</Text>
 
         <SettingCard>
           <SettingRow
-            icon="finger-print-outline"
-            iconColor={COLORS.accentBlush}
-            label="User ID"
-            description="Your unique identifier"
-            rightElement={
-              <TouchableOpacity
-                onPress={() => {
-                  if (user?.uid) {
-                    Alert.alert("User ID", user.id, [
-                      { text: "Copy", onPress: () => showToast("User ID copied", 'success') },
-                      { text: "OK" }
-                    ]);
-                  }
-                }}
-              >
-                <Text style={styles.userIdText}>
-                  {user?.uid ? `${user.id.substring(0, 8)}...` : "N/A"}
-                </Text>
-              </TouchableOpacity>
-            }
+            icon="mail-outline"
+            iconColor={COLORS.accentPlum}
+            label="Change Email"
+            description={isConnected ? user?.email : "Offline - unavailable"}
+            onPress={() => { setEmailError(""); setNewEmail(""); setEmailPassword(""); setIsEmailModalVisible(true); }}
+            disabled={!isConnected}
+            showChevron
           />
 
           <View style={styles.divider} />
@@ -902,24 +1180,21 @@ export default function SettingsScreen() {
         </SettingCard>
 
         {/* Preferences Section */}
-        <Text style={styles.sectionHeader}>
-          <Ionicons name="settings-outline" size={16} color={COLORS.textSecondary} />
-          <Text style={styles.sectionHeaderText}> Preferences</Text>
-        </Text>
+        <Text style={styles.sectionLabel}>Preferences</Text>
 
         <SettingCard>
           <SettingRow
             icon="notifications-outline"
             iconColor={COLORS.sage}
             label="Push Notifications"
-            description={isConnected 
-              ? (notifications ? "Enabled" : "Disabled")
+            description={isConnected
+              ? (notifications ? "Enabled — stay on track" : "Disabled")
               : "Offline - unavailable"}
             disabled={!isConnected}
             rightElement={
               <Switch
-                trackColor={{ false: COLORS.surfaceVariant, true: COLORS.sage + '80' }}
-                thumbColor={notifications ? COLORS.sage : '#f4f3f4'}
+                trackColor={{ false: COLORS.surfaceVariant, true: COLORS.sage + "60" }}
+                thumbColor={notifications ? COLORS.sage : "#e0e0e0"}
                 ios_backgroundColor={COLORS.surfaceVariant}
                 onValueChange={handleNotificationsToggle}
                 value={notifications}
@@ -927,67 +1202,38 @@ export default function SettingsScreen() {
               />
             }
           />
-
-          <View style={styles.divider} />
-
-          <SettingRow
-            icon="time-outline"
-            iconColor={COLORS.accentWarm}
-            label="Daily Reminder Time"
-            description={!isConnected ? "Offline - unavailable" 
-              : !notifications ? "Enable notifications first"
-              : "Tap to change"}
-            onPress={() => notifications && isConnected && setShowTimePicker(true)}
-            disabled={!notifications || !isConnected}
-            rightElement={
-              <View style={styles.timeDisplay}>
-                <Text style={styles.timeText}>
-                  {formatTimeDisplay(reminderTime)}
-                </Text>
-              </View>
-            }
-          />
         </SettingCard>
 
-        {/* Time Picker */}
-        {showTimePicker && (
-          <DateTimePicker
-            value={reminderTime}
-            mode="time"
-            is24Hour={false}
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            onChange={handleTimeChange}
-          />
-        )}
-
         {/* Danger Zone */}
-       
+        <Text style={styles.sectionLabel}>Danger Zone</Text>
+
         <SettingCard style={styles.dangerCard}>
-          <TouchableOpacity
-            style={styles.deleteAccountButton}
+          <SettingRow
+            icon="trash-outline"
+            iconColor={COLORS.danger}
+            label="Delete Account"
+            description="Permanently remove all your data"
             onPress={() => setIsDeleteAccountModalVisible(true)}
             disabled={!isConnected}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="trash-outline" size={22} color={COLORS.danger} />
-            <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.danger} />
-          </TouchableOpacity>
+            showChevron
+          />
         </SettingCard>
 
         {/* Logout Button */}
         <TouchableOpacity
           style={styles.logoutButton}
           onPress={handleLogout}
-          activeOpacity={0.8}
+          activeOpacity={0.85}
           disabled={!isConnected}
         >
           <LinearGradient
-            colors={[COLORS.accentBlush, COLORS.accentWarm]}
+            colors={[COLORS.gradientStart, COLORS.gradientMid]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
             style={styles.logoutGradient}
           >
-            <Ionicons name="log-out-outline" size={22} color="#fff" />
-            <Text style={styles.logoutButtonText}>Log Out</Text>
+            <Ionicons name="log-out-outline" size={20} color="rgba(255,255,255,0.9)" />
+            <Text style={styles.logoutButtonText}>Sign Out</Text>
           </LinearGradient>
         </TouchableOpacity>
 
@@ -1252,6 +1498,183 @@ export default function SettingsScreen() {
         </View>
       </SettingsModal>
 
+      {/* ── Edit Profile Modal ── */}
+      <SettingsModal
+        visible={isProfileModalVisible}
+        onClose={() => setIsProfileModalVisible(false)}
+        title="Edit Profile"
+      >
+        <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <View style={styles.modalForm}>
+            <View style={styles.avatarPickerRow}>
+              <TouchableOpacity onPress={handlePickImage} activeOpacity={0.8} style={styles.avatarPickerBtn}>
+                {uploadingPhoto ? (
+                  <ActivityIndicator size="large" color={COLORS.accentBlush} />
+                ) : editPhotoURL ? (
+                  <Image 
+                    key={editPhotoURL}
+                    source={{ uri: editPhotoURL }} 
+                    style={styles.avatarPickerImg} 
+                  />
+                ) : (
+                  <LinearGradient colors={[COLORS.accentBlush, COLORS.accentWarm]} style={styles.avatarPickerImg}>
+                    <Text style={styles.avatarPickerInitial}>
+                      {(editUsername || user?.email || "U")[0].toUpperCase()}
+                    </Text>
+                  </LinearGradient>
+                )}
+                <View style={styles.avatarPickerBadge}>
+                  <Ionicons name="camera" size={14} color="#fff" />
+                </View>
+              </TouchableOpacity>
+              <Text style={styles.avatarPickerHint}>Tap to change photo</Text>
+            </View>
+
+            <View style={styles.passwordField}>
+              <Text style={styles.inputLabel}>Display Name</Text>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="person-outline" size={20} color={COLORS.accentBlush} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Your display name"
+                  placeholderTextColor={COLORS.placeholder}
+                  value={editUsername}
+                  onChangeText={setEditUsername}
+                  maxLength={40}
+                  editable={!savingProfile}
+                />
+              </View>
+            </View>
+
+            <View style={styles.passwordField}>
+              <Text style={styles.inputLabel}>Bio</Text>
+              <View style={[styles.inputWrapper, { alignItems: 'flex-start', paddingVertical: 12 }]}>
+                <Ionicons name="document-text-outline" size={20} color={COLORS.accentBlush} style={[styles.inputIcon, { marginTop: 2 }]} />
+                <TextInput
+                  style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
+                  placeholder="Tell us about yourself..."
+                  placeholderTextColor={COLORS.placeholder}
+                  value={editBio}
+                  onChangeText={setEditBio}
+                  multiline
+                  maxLength={200}
+                  editable={!savingProfile}
+                />
+              </View>
+            </View>
+
+            <View style={styles.passwordField}>
+              <Text style={styles.inputLabel}>Date of Birth</Text>
+              <TouchableOpacity style={styles.inputWrapper} onPress={() => setShowDobPicker(true)} activeOpacity={0.8}>
+                <Ionicons name="calendar-outline" size={20} color={COLORS.accentBlush} style={styles.inputIcon} />
+                <Text style={[styles.input, { color: editDob ? COLORS.textPrimary : COLORS.placeholder }]}>
+                  {editDob || "Select date"}
+                </Text>
+                <Ionicons name="chevron-forward" size={18} color={COLORS.textTertiary} />
+              </TouchableOpacity>
+            </View>
+
+            {showDobPicker && (
+              <DateTimePicker
+                value={editDob ? new Date(editDob) : new Date()}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                maximumDate={new Date()}
+                onChange={(e, d) => {
+                  setShowDobPicker(false);
+                  if (d) setEditDob(d.toISOString().split("T")[0]);
+                }}
+              />
+            )}
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalCancelButton} onPress={() => setIsProfileModalVisible(false)} disabled={savingProfile}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSaveButton, savingProfile && styles.modalSaveButtonDisabled]}
+                onPress={handleSaveProfile}
+                disabled={savingProfile}
+              >
+                <LinearGradient colors={[COLORS.accentBlush, COLORS.accentWarm]} style={styles.modalSaveGradient}>
+                  {savingProfile ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>Save Profile</Text>}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      </SettingsModal>
+
+      {/* ── Change Email Modal ── */}
+      <SettingsModal
+        visible={isEmailModalVisible}
+        onClose={() => { setIsEmailModalVisible(false); setEmailError(""); }}
+        title="Change Email"
+      >
+        <View style={styles.modalForm}>
+          <Text style={styles.modalDescription}>
+            Enter your new email. We'll send a confirmation link to verify it.
+          </Text>
+          <View style={styles.passwordField}>
+            <Text style={styles.inputLabel}>New Email Address</Text>
+            <View style={styles.inputWrapper}>
+              <Ionicons name="mail-outline" size={20} color={COLORS.accentWarm} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder="new@email.com"
+                placeholderTextColor={COLORS.placeholder}
+                value={newEmail}
+                onChangeText={setNewEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                autoCorrect={false}
+                editable={!isEmailUpdating}
+              />
+            </View>
+          </View>
+          <View style={styles.passwordField}>
+            <Text style={styles.inputLabel}>Current Password (to confirm)</Text>
+            <View style={styles.inputWrapper}>
+              <Ionicons name="lock-closed-outline" size={20} color={COLORS.accentBlush} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder="Enter your password"
+                placeholderTextColor={COLORS.placeholder}
+                secureTextEntry={!showEmailPassword}
+                value={emailPassword}
+                onChangeText={setEmailPassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isEmailUpdating}
+              />
+              <TouchableOpacity onPress={() => setShowEmailPassword(!showEmailPassword)} style={styles.eyeIcon}>
+                <Ionicons name={showEmailPassword ? "eye-off-outline" : "eye-outline"} size={22} color={COLORS.textTertiary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+          {emailError ? (
+            <View style={styles.errorContainer}>
+              <Ionicons name="alert-circle" size={16} color={COLORS.danger} />
+              <Text style={styles.errorText}>{emailError}</Text>
+            </View>
+          ) : null}
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setIsEmailModalVisible(false)} disabled={isEmailUpdating}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modalSaveButton, (!newEmail.includes("@") || !emailPassword || isEmailUpdating) && styles.modalSaveButtonDisabled]}
+              onPress={handleChangeEmail}
+              disabled={!newEmail.includes("@") || !emailPassword || isEmailUpdating}
+            >
+              <LinearGradient colors={[COLORS.accentWarm, COLORS.accentBlush]} style={styles.modalSaveGradient}>
+                {isEmailUpdating ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveText}>Update Email</Text>}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SettingsModal>
+
       {/* Toast Message */}
       <ToastMessage
         visible={toast.visible}
@@ -1273,53 +1696,64 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundBase,
   },
 
-  // Header
+  // ── Header ──
   header: {
-    backgroundColor: COLORS.card,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    shadowColor: COLORS.nudeShadow,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-    elevation: 8,
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 12,
   },
   headerContent: {
     flex: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 50 : 18,
-    paddingBottom: 16,
+    alignItems: 'flex-end',
+    paddingHorizontal: 24,
+    paddingTop: Platform.OS === 'ios' ? 54 : 24,
+    paddingBottom: 22,
+  },
+  headerTextBlock: {
+    flex: 1,
+  },
+  headerEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.45)',
+    letterSpacing: 3,
+    marginBottom: 4,
   },
   headerTitle: {
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: '900',
-    color: COLORS.textPrimary,
-    letterSpacing: -0.5,
+    color: '#FFFFFF',
+    letterSpacing: -0.8,
+    lineHeight: 38,
   },
   headerSubtitle: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    marginTop: 4,
-    fontWeight: '500',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.55)',
+    marginTop: 3,
+    fontWeight: '400',
+    letterSpacing: 0.2,
   },
 
   // Offline Badge
   offlineBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.warning,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
-    gap: 6,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
   },
   offlineText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
 
@@ -1342,204 +1776,312 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 40,
+    paddingHorizontal: 18,
+    paddingTop: 22,
+    paddingBottom: 50,
   },
 
-  // Section Header
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    marginTop: 8,
-  },
-  sectionHeaderText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.textPrimary,
-    marginLeft: 6,
+  // Section Label
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textTertiary,
+    letterSpacing: 1.8,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    marginBottom: 10,
+    marginTop: 6,
+    marginLeft: 4,
   },
 
   // Setting Card
   settingCard: {
-    borderRadius: 24,
+    borderRadius: 20,
     overflow: 'hidden',
-    marginBottom: 16,
+    marginBottom: 14,
     shadowColor: COLORS.nudeShadow,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
-    shadowRadius: 12,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.7,
+    shadowRadius: 16,
+    elevation: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(196,116,110,0.1)',
+  },
+  settingCardBlur: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.96)',
   },
   settingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
   },
   settingRowDisabled: {
-    opacity: 0.6,
+    opacity: 0.45,
   },
   settingIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 13,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
+    marginRight: 14,
   },
   settingContent: {
     flex: 1,
   },
   settingLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: COLORS.textPrimary,
-    marginBottom: 2,
+    letterSpacing: -0.1,
   },
   settingLabelDisabled: {
     color: COLORS.textTertiary,
   },
   settingDescription: {
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.textSecondary,
+    marginTop: 2,
+    letterSpacing: 0.1,
   },
   settingDescriptionDisabled: {
     color: COLORS.textTertiary,
   },
   settingRight: {
-    marginLeft: 12,
+    marginLeft: 10,
   },
 
   // Divider
   divider: {
     height: 1,
-    backgroundColor: COLORS.cardBorder,
-    marginLeft: 80,
+    backgroundColor: 'rgba(196,116,110,0.08)',
+    marginLeft: 74,
+    marginRight: 18,
   },
 
-  // Profile Card
-  profileCard: {
+  // ── Hero Profile Card ──
+  heroCard: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    marginBottom: 22,
+    shadowColor: COLORS.gradientStart,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  heroGradient: {
+    padding: 22,
+    paddingBottom: 16,
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  heroCircle1: {
+    position: 'absolute',
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    top: -60,
+    right: -40,
+  },
+  heroCircle2: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    bottom: -30,
+    left: 20,
+  },
+  heroRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
   },
-  avatarGradient: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+  heroAvatarWrap: {
+    position: 'relative',
+    marginRight: 16,
+  },
+  heroAvatar: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  heroAvatarFallback: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.25)',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: COLORS.accentBlush,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 6,
   },
-  avatarText: {
-    color: '#fff',
+  heroAvatarInitial: {
     fontSize: 28,
     fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.5,
   },
-  profileInfo: {
+  heroEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  heroInfo: {
     flex: 1,
-    marginLeft: 16,
   },
-  profileName: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.textPrimary,
-    marginBottom: 4,
+  heroName: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.4,
+    marginBottom: 3,
   },
-  profileEmail: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
+  heroEmail: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.6)',
+    fontWeight: '400',
   },
-
-  // User ID
-  userIdText: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
-    backgroundColor: COLORS.surfaceVariant,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+  heroBio: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.45)',
+    marginTop: 3,
+    fontStyle: 'italic',
   },
-
-  // Time Display
-  timeDisplay: {
-    backgroundColor: COLORS.surfaceVariant,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.accentWarm + '30',
+  heroChevronWrap: {
+    marginLeft: 8,
   },
-  timeText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.accentWarm,
+  heroFooter: {
+    marginTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    paddingTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  heroPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  heroPillDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+  },
+  heroPillText: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.45)',
+    fontWeight: '500',
+    letterSpacing: 0.3,
   },
 
   // Danger Zone
   dangerCard: {
     borderWidth: 1,
-    borderColor: COLORS.danger + '30',
-  },
-  deleteAccountButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-  },
-  deleteAccountButtonText: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.danger,
-    marginLeft: 12,
+    borderColor: COLORS.danger + '20',
   },
 
   // Logout Button
   logoutButton: {
-    marginTop: 20,
-    borderRadius: 16,
+    marginTop: 22,
+    borderRadius: 18,
     overflow: 'hidden',
-    shadowColor: COLORS.accentBlush,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 6,
+    shadowColor: COLORS.gradientStart,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 8,
   },
   logoutGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
-    gap: 8,
+    paddingVertical: 17,
+    gap: 9,
   },
   logoutButtonText: {
     color: '#fff',
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+
+  // Avatar picker in modal
+  avatarPickerRow: {
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  avatarPickerBtn: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    position: 'relative',
+    overflow: 'visible',
+  },
+  avatarPickerImg: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarPickerInitial: {
+    color: '#fff',
+    fontSize: 36,
+    fontWeight: '800',
+  },
+  avatarPickerBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    backgroundColor: COLORS.accentBlush,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  avatarPickerHint: {
+    marginTop: 10,
+    fontSize: 13,
+    color: COLORS.textSecondary,
   },
 
   // Footer
   footer: {
     alignItems: 'center',
-    marginTop: 40,
+    marginTop: 44,
+    paddingBottom: 10,
   },
   footerText: {
-    fontSize: 12,
-    color: COLORS.textTertiary,
-    marginBottom: 4,
-  },
-  versionText: {
     fontSize: 11,
     color: COLORS.textTertiary,
-    opacity: 0.6,
+    marginBottom: 3,
+    letterSpacing: 0.5,
+    fontWeight: '500',
+  },
+  versionText: {
+    fontSize: 10,
+    color: COLORS.textTertiary,
+    opacity: 0.5,
+    letterSpacing: 0.3,
   },
 
   // Modal
@@ -1551,39 +2093,50 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   modalContainer: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     overflow: 'hidden',
-    maxHeight: height * 0.9,
+    maxHeight: height * 0.88,
   },
   modalBlur: {
-    paddingTop: 20,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 24,
+    backgroundColor: 'rgba(247,243,239,0.97)',
+  },
+  modalDragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.textTertiary,
+    alignSelf: 'center',
+    marginBottom: 16,
+    opacity: 0.4,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 22,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.cardBorder,
+    borderBottomColor: 'rgba(196,116,110,0.1)',
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: '800',
     color: COLORS.textPrimary,
+    letterSpacing: -0.3,
   },
   modalCloseButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: COLORS.surfaceVariant,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
-    padding: 20,
+    padding: 22,
   },
   modalForm: {
     gap: 20,

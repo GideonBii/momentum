@@ -641,9 +641,9 @@ const GoalCard = ({
               {goal.isOwner && (
                 <>
                   <View style={styles.tapHintContainer}>
-                    <Ionicons name="hand-left-outline" size={14} color={COLORS.accentBlush} />
+                    <Ionicons name="" size={14} color={COLORS.accentBlush} />
                     <Text style={styles.tapHintText}>
-                      Tap the goal card to expand it, then add milestones
+                     
                     </Text>
                   </View>
                   <TouchableOpacity
@@ -1768,21 +1768,8 @@ export default function GoalsScreen() {
           </View>
           
           {/* Search Bar */}
-          <View style={styles.searchContainer}>
-            <Ionicons name="search" size={18} color={COLORS.textTertiary} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search goals..."
-              placeholderTextColor={COLORS.textTertiary}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-            {searchQuery ? (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Ionicons name="close-circle" size={18} color={COLORS.textTertiary} />
-              </TouchableOpacity>
-            ) : null}
-          </View>
+         
+          
         </View>
       </Animated.View>
       

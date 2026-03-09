@@ -7,11 +7,13 @@
 // ✅ Pill-style dot indicator replacing tiny dots
 // ✅ Subtle warm background tint for depth
 // ✅ Consistent typographic scale (light / medium / bold rhythm)
+// ✅ FIXED: Profile avatar and username now update immediately when changed
+// ✅ FIXED: Shared Goals data now properly fetched from database
 
 import { Ionicons } from "@expo/vector-icons";
-import { DrawerActions, useNavigation } from "@react-navigation/native";
+import { DrawerActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
   Image,
@@ -154,7 +156,7 @@ function FocusBlock({ item, onPress, pendingCount, completedCount }) {
 
         {/* Task title */}
         <Text style={styles.focusTitle} numberOfLines={2}>
-          {item.value || "No task set"}
+          {item.value || "No task set — tap to add one"}
         </Text>
 
         {/* Bottom row: task progress bar */}
@@ -387,7 +389,7 @@ const PillIndicator = ({ count, activeIndex }) => (
 // ─── MAIN SCREEN ─────────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const navigation = useNavigation();
-  const { user, profile } = useApp();
+  const { user, profile } = useApp(); // ✅ This will now re-render when profile updates
   const insets = useSafeAreaInsets();
 
   // Data states
@@ -557,22 +559,68 @@ export default function HomeScreen() {
     };
   }, [user]);
 
-  useEffect(() => {
+  // ===== FIXED: Fetch shared goals properly =====
+  const fetchSharedGoals = useCallback(async () => {
     if (!user?.id) return;
-    const uid = user.id;
-    const fetchShared = async () => {
-      const { data } = await supabase
+    
+    try {
+      const { data, error } = await supabase
         .from("shared_goals")
         .select("*")
-        .or(`creator_id.eq.${uid},participants.cs.[{"id":"${uid}"}]`);
-      if (data) setSharedGoals(data);
-    };
-    fetchShared();
-    const ch = supabase.channel(`home-shared-goals-${uid}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "shared_goals" }, fetchShared)
-      .subscribe();
-    return () => supabase.removeChannel(ch);
+        .filter("participants", "cs", `["${user.id}"]`); // Fix: Proper JSON array containment syntax
+
+      if (error) {
+        console.error("Error fetching shared goals:", error);
+        return;
+      }
+
+      if (data) {
+        // Process each goal to ensure participant_details is an array
+        const processedGoals = data.map(goal => ({
+          ...goal,
+          participant_details: Array.isArray(goal.participant_details) 
+            ? goal.participant_details 
+            : []
+        }));
+        
+        setSharedGoals(processedGoals);
+      }
+    } catch (error) {
+      console.error("Error in fetchSharedGoals:", error);
+    }
   }, [user]);
+
+  // Refetch whenever the screen is focused (e.g. returning from SharedGoalsScreen)
+  useFocusEffect(
+    useCallback(() => {
+      fetchSharedGoals();
+    }, [fetchSharedGoals])
+  );
+
+  // Realtime subscription — stays alive while component is mounted
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    const channel = supabase
+      .channel(`shared-goals-home-${user.id}`)
+      .on(
+        "postgres_changes",
+        { 
+          event: "*", 
+          schema: "public", 
+          table: "shared_goals" 
+        },
+        () => {
+          // Refetch all shared goals when any change occurs
+          fetchSharedGoals();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, fetchSharedGoals]);
 
   const handleCardPress = (item) => {
     if (item.route) navigation.navigate(item.route);
@@ -622,12 +670,20 @@ export default function HomeScreen() {
             </Animated.View>
 
             <TouchableOpacity
-              onPress={() => navigation.navigate("Profile")}
+              onPress={() => navigation.navigate("Settings")}
               style={styles.avatarBtn}
               activeOpacity={0.85}
             >
               {profile?.profilePic ? (
-                <Image source={{ uri: profile.profilePic }} style={styles.avatarImg} />
+                <Image 
+                  key={profile.profilePic}
+                  source={{ uri: profile.profilePic }} 
+                  style={styles.avatarImg}
+                  onError={(e) => {
+                    console.log("Image failed to load:", profile.profilePic);
+                    // Optionally set a fallback
+                  }}
+                />
               ) : (
                 <View style={styles.avatarPlaceholder}>
                   <Text style={styles.avatarInitial}>

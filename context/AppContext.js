@@ -1,98 +1,132 @@
-// context/AppContext.js
-// ✅ Single source of truth for user + profile across entire app
-// ✅ setProfileUpdates() lets any screen push changes instantly (no re-fetch needed)
-// ✅ Realtime listener only syncs fields it won't race — never blanks an in-flight update
-// ✅ profilePic cache-buster applied only when the URL itself changes
+// context/AppContext.js - Updated to handle base64 images
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseConfig";
 
 const AppContext = createContext(undefined);
 
-const getDefaultUsername = (supabaseUser) =>
-  supabaseUser?.email ? supabaseUser.email.split("@")[0] : "User";
+const getDefaultUsername = (supabaseUser) => {
+  return supabaseUser?.email ? supabaseUser.email.split("@")[0] : "User";
+};
 
-// Strip ?t= params so we compare base URLs when deciding whether to add a cache-buster
-const baseUrl = (url) => (url ? url.split("?")[0] : null);
+// Check if a string is a base64 image
+const isBase64Image = (str) => {
+  return typeof str === 'string' && str.startsWith('data:image');
+};
 
 export const AppProvider = ({ children }) => {
-  const [user, setUser]               = useState(null);
-  const [profile, setProfile]         = useState({ username: "", bio: "", profilePic: null });
-  const [loading, setLoading]         = useState(true);
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState({
+    username: "",
+    bio: "",
+    profilePic: null,
+  });
+  const [loading, setLoading] = useState(true);
   const [profileReady, setProfileReady] = useState(false);
-  const [error, setError]             = useState(null);
+  const [error, setError] = useState(null);
+  const [imageLoadError, setImageLoadError] = useState(false);
 
   const profileChannelRef = useRef(null);
-  // Tracks the last profile_pic URL we fetched from DB so we can detect real changes
-  const lastFetchedPicRef = useRef(null);
 
   const clearUserData = () => {
     setUser(null);
-    setProfile({ username: "", bio: "", profilePic: null });
+    setProfile({ 
+      username: "", 
+      bio: "", 
+      profilePic: null,
+    });
     setProfileReady(false);
     setError(null);
-    lastFetchedPicRef.current = null;
+    setImageLoadError(false);
   };
 
-  const fetchAndApplyProfile = async (supabaseUser) => {
+  const fetchAndApplyProfile = useCallback(async (supabaseUser) => {
     try {
       const { data, error: profileError } = await supabase
         .from("profiles")
-        .select("username, bio, profile_pic, streak, dob, interests, gender, country")
+        .select("username, bio, profile_pic")
         .eq("id", supabaseUser.id)
         .single();
 
       if (profileError && profileError.code !== "PGRST116") {
-        console.warn("⚠️ Profile fetch warning:", profileError.code);
+        console.warn("⚠️ Profile fetch warning:", profileError);
       }
 
-      const incomingPic = data?.profile_pic || null;
-
-      setProfile((prev) => {
-        // Only add a cache-buster when the stored URL has actually changed
-        // (prevents double ?t= and unnecessary Image re-renders)
-        let picToUse = prev.profilePic;
-        if (incomingPic) {
-          if (baseUrl(incomingPic) !== baseUrl(lastFetchedPicRef.current)) {
-            // New photo — apply with cache-buster to force React Native to reload
-            picToUse = incomingPic + "?t=" + Date.now();
-            lastFetchedPicRef.current = incomingPic;
-          }
-          // else: same URL already in DB — keep whatever is already in state
-          //       (may already have a cache-buster from a recent upload)
-        } else if (!prev.profilePic) {
-          picToUse = null; // No photo anywhere, keep null
+      let profilePic = null;
+      let imageError = false;
+      
+      if (data?.profile_pic) {
+        // Check if it's a base64 image
+        if (isBase64Image(data.profile_pic)) {
+          profilePic = data.profile_pic;
+          imageError = false;
+        } else {
+          // For URL-based images, we'll try them but they might fail
+          profilePic = data.profile_pic;
+          imageError = false; // We'll let the Image component handle errors
         }
-        // If incomingPic is null but prev has one — keep prev (race condition guard)
+      }
 
-        return {
-          username:  data?.username  || getDefaultUsername(supabaseUser),
-          bio:       data?.bio       || "",
-          profilePic: picToUse,
-          streak:    data?.streak    || 0,
-          dob:       data?.dob       || null,
-          interests: data?.interests || [],
-          gender:    data?.gender    || null,
-          country:   data?.country   || null,
-        };
+      const newProfile = {
+        username: data?.username || getDefaultUsername(supabaseUser),
+        bio: data?.bio || "",
+        profilePic: profilePic,
+      };
+
+      setProfile(newProfile);
+      setImageLoadError(imageError);
+      setProfileReady(true);
+      return newProfile;
+    } catch (err) {
+      console.warn("⚠️ Profile fetch error:", err?.message);
+      setProfile({
+        username: getDefaultUsername(supabaseUser),
+        bio: "",
+        profilePic: null,
+      });
+      setImageLoadError(false);
+      setProfileReady(false);
+      return null;
+    }
+  }, []);
+
+  const updateProfile = useCallback(async (updates = {}) => {
+    if (!user) return false;
+    
+    try {
+      const updateData = {
+        updated_at: new Date().toISOString(),
+      };
+      
+      if (updates.username !== undefined) updateData.username = updates.username;
+      if (updates.bio !== undefined) updateData.bio = updates.bio;
+      if (updates.profile_pic !== undefined) updateData.profile_pic = updates.profile_pic;
+
+      const { error } = await supabase
+        .from("profiles")
+        .update(updateData)
+        .eq("id", user.id);
+
+      if (error) throw error;
+
+      // Update local state
+      setProfile(prev => {
+        const updated = { ...prev };
+        if (updates.username !== undefined) updated.username = updates.username;
+        if (updates.bio !== undefined) updated.bio = updates.bio;
+        if (updates.profile_pic !== undefined) {
+          updated.profilePic = updates.profile_pic;
+          setImageLoadError(false);
+        }
+        return { ...updated };
       });
 
-      setProfileReady(true);
+      return true;
     } catch (err) {
-      console.warn("⚠️ Profile fetch error (non-fatal):", err?.message);
-      setProfile((prev) => ({
-        username:   getDefaultUsername(supabaseUser),
-        bio:        "",
-        profilePic: prev?.profilePic || null,
-        streak:     0,
-        dob:        null,
-        interests:  [],
-        gender:     null,
-        country:    null,
-      }));
-      setProfileReady(false);
+      console.error("Error updating profile:", err);
+      return false;
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     setLoading(true);
@@ -115,19 +149,25 @@ export const AppProvider = ({ children }) => {
 
         const supabaseUser = session.user;
         setUser(supabaseUser);
-
-        // Show safe defaults immediately while we fetch the real profile
-        setProfile({ username: getDefaultUsername(supabaseUser), bio: "", profilePic: null });
+        setProfile({
+          username: getDefaultUsername(supabaseUser),
+          bio: "",
+          profilePic: null,
+        });
 
         await fetchAndApplyProfile(supabaseUser);
         setLoading(false);
 
-        // Realtime: re-fetch whenever the profiles row changes
         const channel = supabase
           .channel(`profile-${supabaseUser.id}`)
           .on(
             "postgres_changes",
-            { event: "*", schema: "public", table: "profiles", filter: `id=eq.${supabaseUser.id}` },
+            {
+              event: "*",
+              schema: "public",
+              table: "profiles",
+              filter: `id=eq.${supabaseUser.id}`,
+            },
             () => fetchAndApplyProfile(supabaseUser)
           )
           .subscribe();
@@ -143,7 +183,7 @@ export const AppProvider = ({ children }) => {
         profileChannelRef.current = null;
       }
     };
-  }, []);
+  }, [fetchAndApplyProfile]);
 
   const value = useMemo(
     () => ({
@@ -153,22 +193,13 @@ export const AppProvider = ({ children }) => {
       loading,
       profileReady,
       error,
+      imageLoadError,
+      setImageLoadError,
       clearError: () => setError(null),
-      /**
-       * setProfileUpdates({ username, bio, profilePic, ... })
-       *
-       * Call this immediately after any DB write so every screen that reads
-       * `profile` from useApp() re-renders right away — no waiting for the
-       * Supabase realtime event.
-       *
-       * For profilePic: pass the final URL including any ?t= cache-buster
-       * you already applied.  fetchAndApplyProfile will detect the base URL
-       * hasn't changed and won't add a second cache-buster.
-       */
-      setProfileUpdates: (updates = {}) =>
-        setProfile((prev) => ({ ...prev, ...updates })),
+      updateProfile,
+      setProfileUpdates: updateProfile,
     }),
-    [user, profile, loading, profileReady, error]
+    [user, profile, loading, profileReady, error, imageLoadError, updateProfile]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
