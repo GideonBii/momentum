@@ -1,13 +1,61 @@
 {
+  "cli": {
+    "version": ">= 5.9.1",
+    "appVersionSource": "remote"
+  },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "credentialsSource": "remote"
+      },
+      "ios": {
+        "credentialsSource": "remote"
+      },
+      "env": {
+        "EXPO_PUBLIC_ADMOB_ANDROID_APP_ID": "ca-app-pub-7149792922852881~4432324355",
+        "NPM_FLAGS": "--legacy-peer-deps"
+      }
+    },
     "preview": {
       "android": {
-        "buildType": "apk"
-      }
+        "buildType": "apk",
+        "credentialsSource": "remote"
+      },
+      "ios": {
+        "credentialsSource": "remote"
+      },
+      "env": {
+        "EXPO_PUBLIC_ADMOB_ANDROID_APP_ID": "ca-app-pub-7149792922852881~4432324355",
+        "NPM_FLAGS": "--legacy-peer-deps"
+      },
+      "autoIncrement": true
     },
     "production": {
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "app-bundle",
+        "credentialsSource": "local"
+      },
+      "ios": {
+        "credentialsSource": "remote"
+      },
+      "env": {
+        "EXPO_PUBLIC_ADMOB_ANDROID_APP_ID": "ca-app-pub-7149792922852881~4432324355",
+        "NPM_FLAGS": "--legacy-peer-deps"
+      },
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "completed"
+      },
+      "ios": {
+        "language": "en-US"
       }
     }
   }

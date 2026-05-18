@@ -9,18 +9,21 @@ module.exports = {
     scheme: "momentum",
     
     ios: {
-      supportsTablet: true,
       bundleIdentifier: "com.protectpesa.momentum",
+      supportsTablet: true,
       buildNumber: "1.0.0",
       infoPlist: {
-        // iOS-specific permissions can be added here if needed
-        UIBackgroundModes: ["remote-notification"]
-      }
+        UIBackgroundModes: ["remote-notification"],
+        NSUserTrackingUsageDescription: "This helps us show you more relevant ads.",
+        ITSAppUsesNonExemptEncryption: false
+      },
+      deploymentTarget: "15.1"
     },
     
     android: {
       package: "com.protectpesa.momentum",
-      versionCode: 1,
+      versionCode: 4
+      ,
       adaptiveIcon: {
         foregroundImage: "./assets/adaptive-icon.png",
         backgroundColor: "#A98467"
@@ -31,12 +34,37 @@ module.exports = {
         "android.permission.RECEIVE_BOOT_COMPLETED"
       ],
       useNextNotificationsApi: true,
-      // Status bar - use different color than splash background
       statusBar: {
-        backgroundColor: "#8F6B4F", // Slightly darker than splash
+        backgroundColor: "#8F6B4F",
         barStyle: "light-content"
       }
     },
+    
+    plugins: [
+      "expo-notifications",
+      "expo-tracking-transparency",
+      "expo-web-browser",
+      [
+        "react-native-google-mobile-ads",
+        {
+          androidAppId: "ca-app-pub-7149792922852881~4432324355",
+          iosAppId: "ca-app-pub-7149792922852881~3618285184" // Replace with actual iOS ID when needed
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          android: {
+            compileSdkVersion: 35,  // ✅ CHANGE FROM 34 TO 35
+            targetSdkVersion: 35,   // ✅ OPTIONAL BUT RECOMMENDED - change from 34 to 35
+            minSdkVersion: 24
+          },
+          ios: {
+            deploymentTarget: "15.1"
+          }
+        }
+      ]
+    ],
     
     extra: {
       eas: {
@@ -44,26 +72,13 @@ module.exports = {
       }
     },
     
-    plugins: [
-      [
-        "expo-notifications",
-        {
-          icon: "./assets/notification-icon.png",
-          color: "#A98467",
-          defaultChannel: "default"
-        }
-      ]
-    ],
-    
     splash: {
       image: "./assets/splash.png",
       resizeMode: "contain",
-      backgroundColor: "#ffffff" // White background
+      backgroundColor: "#ffffff"
     },
     
-    assetBundlePatterns: [
-      "**/*"
-    ],
+    assetBundlePatterns: ["**/*"],
     
     web: {
       favicon: "./assets/favicon.png",
@@ -79,10 +94,12 @@ module.exports = {
       fallbackToCacheTimeout: 0
     },
     
-    // iOS status bar config
     iosStatusBar: {
       backgroundColor: "#A98467",
       barStyle: "light-content"
     }
+  },
+  "react-native-google-mobile-ads": {
+    android_app_id: "ca-app-pub-7149792922852881~4432324355"
   }
 };
