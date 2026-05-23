@@ -14,7 +14,9 @@ module.exports = {
       buildNumber: "1.0.0",
       infoPlist: {
         UIBackgroundModes: ["remote-notification"],
-        NSUserTrackingUsageDescription: "This helps us show you more relevant ads.",
+        NSUserTrackingUsageDescription: "This identifier is used to deliver personalized ads and measure ad performance. For example, it helps us show you productivity app recommendations relevant to your interests.",
+        NSPhotoLibraryUsageDescription: "Momentum uses your photo library to let you set a profile picture. For example, you can choose a photo of yourself to display on your profile.",
+        NSCameraUsageDescription: "Momentum uses your camera to let you take a new profile photo directly within the app.",
         ITSAppUsesNonExemptEncryption: false
       },
       deploymentTarget: "15.1"
@@ -22,8 +24,7 @@ module.exports = {
     
     android: {
       package: "com.protectpesa.momentum",
-      versionCode: 4
-      ,
+      versionCode: 5,
       adaptiveIcon: {
         foregroundImage: "./assets/adaptive-icon.png",
         backgroundColor: "#A98467"
@@ -48,15 +49,15 @@ module.exports = {
         "react-native-google-mobile-ads",
         {
           androidAppId: "ca-app-pub-7149792922852881~4432324355",
-          iosAppId: "ca-app-pub-7149792922852881~3618285184" // Replace with actual iOS ID when needed
+          iosAppId: "ca-app-pub-7149792922852881~3618285184"
         }
       ],
       [
         "expo-build-properties",
         {
           android: {
-            compileSdkVersion: 35,  // ✅ CHANGE FROM 34 TO 35
-            targetSdkVersion: 35,   // ✅ OPTIONAL BUT RECOMMENDED - change from 34 to 35
+            compileSdkVersion: 35,
+            targetSdkVersion: 35,
             minSdkVersion: 24
           },
           ios: {
