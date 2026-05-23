@@ -17,3 +17,13 @@ android
 
 credentials.json
 credentials/
+
+*.jks
+*.keystore
+*.pem
+*.der
+upload_key.zip
+credentials/
+
+android/
+ios/
